@@ -156,17 +156,19 @@ articles:
     title: "如何做好客户成功？"
     url: "https://www.zhihu.com/question/123456789"
     type: "question"
-
-settings:
-  check_interval_hours: 6
-  max_new_comments_per_run: 20      # 每次最多处理条数，防止异常
-  max_new_comments_per_day: 100     # 每日上限（防止费用/风控异常）
-  llm_budget_usd_per_day: 0.50     # 每日 LLM 费用预算上限，超出进 pending/
 ```
+
+> **注意**：`articles.yaml` 仅维护监控的文章/问题列表，不包含 settings 配置。所有运行参数统一在 `config/settings.yaml` 中管理。
 
 ### config/settings.yaml
 
 ```yaml
+bot:
+  check_interval_hours: 6
+  max_new_comments_per_run: 20      # 每次最多处理条数，防止异常
+  max_new_comments_per_day: 100     # 每日上限（防止费用/风控异常）
+  llm_budget_usd_per_day: 0.50     # 每日 LLM 费用预算上限，超出进 pending/
+
 llm:
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"
@@ -219,14 +221,15 @@ alerting:
 
 #### AI-001：手动验证知乎 API v4 可用性
 
-- **目标**：在正式开发前确认知乎 API 读写接口的当前可用状态；特别验证 Cookie+CSRF 是否足以发布评论（无需 OAuth）
+- **目标**：在正式开发前确认知乎 API 读写接口的当前可用状态；明确评论写接口的正确端点、Host 与认证要求
 - **背景**：[zhihu-cli](https://github.com/BAIGUANGMEI/zhihu-cli) 已验证 Cookie+`_xsrf` CSRF token 可用于发布提问/想法/文章等写操作（无需 OAuth），但"发布评论"列在其"后续开发"清单（尚未实现）。需实测评论接口。
 - **任务**：
-  1. 用 curl/Postman 测试 `GET /api/v4/articles/{id}/comments`，记录响应格式
-  2. **关键测试**：用 Cookie + `x-xsrftoken: <_xsrf值>` 请求头，测试 `POST /api/v4/articles/{id}/comments`，观察是否成功（若返回 200/201 表示 Cookie+CSRF 足够，无需 OAuth）
-  3. 若上述失败（401/403 with error reason = oauth_required），记录错误信息，评估 OAuth 申请路径
-  4. 将实测结果更新至 `docs/调研/01-知乎数据获取.md`，包括成功/失败的请求响应示例
-- **验收**：文档中有实测的请求/响应示例；明确"Cookie+CSRF 可行"或"需要 OAuth"的结论
+  1. 用 curl/Postman 测试 `GET https://www.zhihu.com/api/v4/articles/{id}/comments`，记录响应格式
+  2. **关键测试（Cookie+CSRF 路径）**：用 Cookie + `x-xsrftoken: <_xsrf值>` 请求头，测试 `POST https://api.zhihu.com/v4/comments`（`object_id` / `object_type` 参数），观察是否成功（若返回 200/201 表示 Cookie+CSRF 足够，无需 OAuth）
+  3. 若上述失败，测试 `POST https://api.zhihu.com/v4/comments` 使用 Bearer OAuth token，确认写操作接口、Host 与认证要求（无有效 OAuth 时预期 401/403）
+  4. 确认 OAuth 申请渠道（知乎开放平台）及审核周期（仅在步骤 2 失败时执行）
+  5. 将实测结果更新至 `docs/调研/01-知乎数据获取.md`，包括成功/失败的请求响应示例；明确写操作正确接口为 `https://api.zhihu.com/v4/comments`、`object_id`/`object_type` 参数结构，与后续 AI-003 的 `post_comment(object_id, object_type, ...)` 设计保持一致
+- **验收**：文档中有实测的请求/响应示例；明确"Cookie+CSRF 可行"或"需要 Bearer OAuth"的结论；接口端点与参数结构与 AI-003/AI-014 设计一致
 - **测试**：无（手动验证步骤）
 
 ---
@@ -240,8 +243,8 @@ alerting:
   3. 创建 `requirements.txt`（openai>=1.0, chromadb, sentence-transformers, requests, pyyaml, python-frontmatter, tiktoken, pytest）
   4. 创建 `tests/` 目录和 `conftest.py`
   5. 创建 `.gitignore`（忽略 `data/vector_store/`、`data/reply_index/`、`.env`）
-- **验收**：`python -m pytest tests/` 可执行（0 tests，无报错）
-- **测试**：`tests/test_config.py` — 验证 yaml 配置文件可被正确加载，必填字段存在
+- **验收**：`python -m pytest tests/` 可执行，且 `tests/test_config.py` 通过
+- **测试**：`tests/test_config.py` — 至少覆盖以下检查：`config/articles.yaml` 可被正确加载、`config/settings.yaml` 可被正确加载、两个配置文件的必填字段存在
 
 ---
 
@@ -250,11 +253,13 @@ alerting:
 - **目标**：实现知乎评论读取与发布，含认证、分页、CSRF、限流
 - **任务**：实现 `scripts/zhihu_client.py`
   1. `ZhihuClient(cookie)` 从 `ZHIHU_COOKIE` 环境变量读取
-  2. `get_article_comments(article_id, since_id=None) -> list[Comment]`
+  2. `get_comments(object_id, object_type, since_id=None) -> list[Comment]`
+     - `object_type` 支持 `"article"` 和 `"question"`（文章走 `/api/v4/articles/{id}/comments`，问题走 `/api/v4/answers/{answer_id}/comments`）
      - 自动分页直到 `is_end=True`
      - 随机延迟 1~2 秒
      - 429 指数退避最多 3 次
   3. `post_comment(object_id, object_type, content, parent_id=None) -> bool`
+     - 调用 `POST https://api.zhihu.com/v4/comments`（与 AI-001 确认的接口端点一致）
      - 从 Cookie 中提取 `_xsrf` 值，设置 `x-xsrftoken` 请求头（参考 [zhihu-cli](https://github.com/BAIGUANGMEI/zhihu-cli) 的 CSRF 处理方式）
      - **若 AI-001 验证 Cookie+CSRF 可用**：直接发送 POST 请求
      - **若 AI-001 验证需要 OAuth**：记录日志并返回 False（由主流程写入 pending/）
@@ -263,10 +268,11 @@ alerting:
   5. Cookie 失效（401/403）时抛出 `ZhihuAuthError`
 - **验收**：单元测试全部通过
 - **测试**：`tests/test_zhihu_client.py`
-  - Mock HTTP：正常分页返回、`is_end=True` 停止分页
+  - Mock HTTP：正常分页返回、`is_end=True` 停止分页（分别测试 article 和 question）
   - Mock HTTP 429：验证指数退避重试逻辑
   - Mock HTTP 401：验证抛出 `ZhihuAuthError`
   - 验证 `Comment` dataclass 字段映射正确
+  - 验证 `post_comment` 请求目标为 `https://api.zhihu.com/v4/comments`，且包含正确的 `object_id`/`object_type` 参数
   - 验证 `post_comment` 请求头包含 `x-xsrftoken`（从 Cookie 提取）
   - Mock POST 成功（200/201）：验证返回 True
   - Mock POST 失败（401）：验证返回 False 并记录日志
@@ -278,10 +284,10 @@ alerting:
 - **目标**：可运行的 workflow，含 HuggingFace 模型缓存
 - **任务**：创建 `.github/workflows/bot.yml`
   1. 触发：`schedule cron '0 2,8,14,20 * * *'` + `workflow_dispatch`
-  2. steps：checkout → setup-python 3.11 → **actions/cache（pip + huggingface）** → pip install → python run_bot.py → git commit+push
+  2. steps：checkout → setup-python 3.11 → **actions/cache（pip + huggingface）** → pip install → `python scripts/run_bot.py` → `git config user.name` / `git config user.email` → git commit+push
   3. 所需 secrets：`ZHIHU_COOKIE`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `GITHUB_TOKEN`
   4. `permissions: contents: write`
-- **验收**：workflow 可手动触发，缓存 key 命中后跳过下载
+- **验收**：workflow 可手动触发，缓存 key 命中后跳过下载；提交步骤不因缺少 git 身份配置而失败
 - **测试**：`tests/test_workflow_config.py` — 解析 yaml，验证必要字段（cron、secrets 引用、permissions）存在
 
 ---
@@ -462,18 +468,19 @@ alerting:
 #### AI-014：ZhihuClient — Cookie+CSRF 评论发布接入
 
 - **目标**：基于 AI-001 验证结果，实现评论自动发布（Cookie+CSRF 方案，参考 [zhihu-cli](https://github.com/BAIGUANGMEI/zhihu-cli) 的 CSRF 处理架构）
-- **前提**：AI-001 确认 `POST /api/v4/comments` 使用 Cookie+`_xsrf` CSRF token 可成功
+- **前提**：AI-001 确认 `POST https://api.zhihu.com/v4/comments` 使用 Cookie+`_xsrf` CSRF token 可成功
 - **任务**：
   1. 完善 `ZhihuClient.post_comment()`（在 AI-003 基础上）
      - 从 Cookie 字符串解析 `_xsrf` 值，设置 `x-xsrftoken` 请求头
      - 设置与 zhihu-cli 相同的浏览器指纹（UA + `sec-ch-ua` + `sec-ch-ua-platform`）
      - 发布失败时写入 pending/ 并返回 False
-  2. 在 `settings.yaml` 中将 `manual_mode` 默认值改为 `false`（Cookie+CSRF 就绪后）
+  2. 保持 `settings.yaml` 中 `manual_mode: true` 为默认值；增加环境变量 `ZHIHU_AUTO_POST=true` 作为显式开关，仅在 Cookie+CSRF 验证通过且主动开启时才切换为自动发布，避免误发
   3. 若 AI-001 证实确实需要 OAuth：保留 `manual_mode: true` 作为默认值，AI-014 改为 OAuth 接入任务（使用 `ZHIHU_OAUTH_TOKEN` 环境变量）
-- **验收**：单元测试全部通过；集成测试（沙盒文章）可实际发布评论
+- **验收**：单元测试全部通过；默认配置下仍进入 pending/ 人工审核；在 Cookie+CSRF 验证通过且 `ZHIHU_AUTO_POST=true` 时，集成测试（沙盒文章）可实际发布评论
 - **测试**：`tests/test_zhihu_post.py`
   - 验证 `_xsrf` 从 Cookie 字符串中正确提取并设置到 `x-xsrftoken` 头
-  - Mock HTTP POST 成功：验证返回 True
+  - 验证默认配置（无 `ZHIHU_AUTO_POST`）下，主流程写入 pending/ 而不调用 `post_comment`
+  - Mock HTTP POST 成功（`ZHIHU_AUTO_POST=true`）：验证返回 True
   - Mock HTTP POST 失败：验证写入 pending/ 并返回 False
   - Mock 401（Cookie 失效）：验证触发 `ZhihuAuthError`
 
@@ -519,12 +526,14 @@ alerting:
 实现 scripts/zhihu_client.py，要求：
 
 1. 类 ZhihuClient(cookie: str)，从环境变量 ZHIHU_COOKIE 读取
-2. 方法 get_article_comments(article_id, since_id=None) -> list[Comment]
-   - 调用 GET https://www.zhihu.com/api/v4/articles/{id}/comments?limit=20&offset=0
+2. 方法 get_comments(object_id, object_type, since_id=None) -> list[Comment]
+   - object_type 支持 "article"（调用 GET https://www.zhihu.com/api/v4/articles/{id}/comments）
+     和 "question"（调用 GET https://www.zhihu.com/api/v4/answers/{answer_id}/comments）
    - 自动分页直到 is_end=True；请求间随机延迟 1~2 秒
    - 429 指数退避重试最多3次
    - User-Agent 和 Referer 请求头（参考 zhihu-cli 的浏览器指纹）
 3. 方法 post_comment(object_id, object_type, content, parent_id=None) -> bool
+   - 调用 POST https://api.zhihu.com/v4/comments（object_id、object_type 作为参数）
    - 从 Cookie 字符串中提取 _xsrf 值，设置 x-xsrftoken 请求头
    - 参考 zhihu-cli (https://github.com/BAIGUANGMEI/zhihu-cli) 的 CSRF 处理方式
    - 发布失败时记录日志并返回 False（主流程处理写入 pending/）
@@ -532,10 +541,11 @@ alerting:
 5. Cookie 失效（401/403）时抛出 ZhihuAuthError
 
 同步编写 tests/test_zhihu_client.py，覆盖：
-- 正常分页、is_end=True 停止
+- 正常分页（article 和 question 各一组）、is_end=True 停止
 - 429 重试逻辑
 - 401 抛出 ZhihuAuthError
 - Comment 字段映射
+- post_comment 目标 URL 为 https://api.zhihu.com/v4/comments，包含正确的 object_id/object_type 参数
 - post_comment 请求头包含从 Cookie 提取的 x-xsrftoken
 - Mock POST 成功：返回 True
 - Mock POST 失败（401）：返回 False，不抛出异常
@@ -655,10 +665,10 @@ alerting:
 
 | Action Item | 功能 | 验收条件 |
 |-------------|------|----------|
-| AI-001 | 知乎 API 验证 | 文档有实测请求/响应示例；Cookie+CSRF 可行性结论明确（可用或需 OAuth） |
-| AI-002 | 项目脚手架 | `pytest tests/` 可执行，配置文件加载测试通过 |
-| AI-003 | 评论读取与发布 | 新评论在下次 Action 触发后被检测到；`post_comment` 正确附加 CSRF 头；单元测试通过 |
-| AI-004 | Actions Workflow | 手动触发成功；HuggingFace 缓存命中后跳过下载 |
+| AI-001 | 知乎 API 验证 | 文档有实测请求/响应示例；写接口端点（`https://api.zhihu.com/v4/comments`）和参数结构（`object_id`/`object_type`）已确认；Cookie+CSRF 可行性结论明确 |
+| AI-002 | 项目脚手架 | `pytest tests/` 可执行，且 `tests/test_config.py` 通过（articles.yaml + settings.yaml 均可加载，必填字段存在） |
+| AI-003 | 评论读取与发布 | `get_comments` 支持 article/question 类型；`post_comment` 调用正确端点并附加 CSRF 头；单元测试通过 |
+| AI-004 | Actions Workflow | 手动触发成功；脚本路径为 `scripts/run_bot.py`；HuggingFace 缓存命中后跳过下载；git 提交不因缺少身份配置而失败 |
 | AI-005 | CSM Wiki RAG | 回复中引用相关 Wiki 内容；增量更新仅处理变更文件 |
 | AI-006 | LLM 回复生成 | 回复质量符合规范；Prompt Cache 命中率 > 50% |
 | AI-007 | 对话线程管理 | 追问回复引用了历史轮次，不重复解释 |
@@ -668,5 +678,5 @@ alerting:
 | AI-011 | 向量库外部化 | PR 不含二进制向量文件；runner 变更后自动重建（headless，无需人工干预） |
 | AI-012 | 费用监控 | 月度 LLM 费用 < $1（基准 300 条/月）；超预算时告警 |
 | AI-013 | 真人回复索引 | 真人回复后，类似问题优先参考真人风格 |
-| AI-014 | Cookie+CSRF 自动发布 | AI-001 通过后接入；可实际发布评论；失败时回退 pending/ |
+| AI-014 | Cookie+CSRF 自动发布 | 默认 `manual_mode: true` 保持不变；`ZHIHU_AUTO_POST=true` 时可实际发布评论；失败时回退 pending/ |
 
