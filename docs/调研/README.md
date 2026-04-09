@@ -30,9 +30,10 @@ Markdown 归档存储 → Git commit → 推送
 
 | 文档 | 内容 |
 |------|------|
-| [01-知乎数据获取.md](./01-知乎数据获取.md) | 知乎 API/CLI、认证方案、反爬对策 |
+| [01-知乎数据获取.md](./01-知乎数据获取.md) | 知乎 API v4 调用、Cookie/OAuth 认证、CLI 工具对比、反爬策略 |
 | [02-GitHub-Actions自动化.md](./02-GitHub-Actions自动化.md) | 定时触发、Secrets 管理、状态持久化 |
-| [03-LLM接入与回复生成.md](./03-LLM接入与回复生成.md) | OpenAI 兼容 API、Prompt 设计 |
-| [04-CSM-Wiki-RAG知识库.md](./04-CSM-Wiki-RAG知识库.md) | RAG 架构、向量库选型、增量更新 |
-| [05-回复归档与存储.md](./05-回复归档与存储.md) | Markdown 存档结构、Git 追踪 |
-| [06-Token优化策略.md](./06-Token优化策略.md) | Prompt 缓存、RAG 压缩、分层检索 |
+| [03-LLM接入与回复生成.md](./03-LLM接入与回复生成.md) | DeepSeek/OpenAI 模型对比、OpenAI 兼容接口、Prompt 设计 |
+| [04-CSM-Wiki-RAG知识库.md](./04-CSM-Wiki-RAG知识库.md) | RAG vs Skill 对比、ChromaDB 向量库、BGE Embedding、增量更新 |
+| [05-回复归档与存储.md](./05-回复归档与存储.md) | Thread 对话线程管理、追问上下文、真人回复⭐高权重索引 |
+| [06-Token优化策略.md](./06-Token优化策略.md) | DeepSeek Prompt Caching、RAG 精准检索、批量处理优化 |
+| [07-费用评估.md](./07-费用评估.md) | 月度费用测算（~$0.20）、DeepSeek vs OpenAI 成本对比、敏感性分析 |
