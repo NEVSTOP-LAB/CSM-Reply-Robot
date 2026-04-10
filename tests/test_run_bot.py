@@ -820,6 +820,9 @@ class TestReplyIndexToRAG:
         runner.rag_retriever.index_human_reply.assert_called_once()
         call_args = runner.rag_retriever.index_human_reply.call_args
         assert "如何使用 CSM？" in call_args.kwargs.get("question", call_args[1].get("question", ""))
+        # 验证 bot 回复内容包含 [rob]: 前缀
+        reply_arg = call_args.kwargs.get("reply", call_args[1].get("reply", ""))
+        assert "CSM 使用指南" in reply_arg
 
 
 # ===== 文章摘要记录测试 =====
@@ -862,7 +865,11 @@ class TestArticleSummary:
 
         # 验证 get_or_create_thread 调用时 article_meta 包含 summary
         calls = runner.thread_manager.get_or_create_thread.call_args_list
+        assert len(calls) > 0, "get_or_create_thread 应至少被调用一次"
+        found_summary = False
         for call in calls:
             meta = call.kwargs.get("article_meta", call[1].get("article_meta", {}))
             if "summary" in meta:
                 assert meta["summary"] == "LLM 生成的摘要"
+                found_summary = True
+        assert found_summary, "至少一次 get_or_create_thread 调用应包含 summary"
