@@ -10,6 +10,9 @@
 - 🔍 RAG 检索 CSM Wiki 知识库，结合上下文生成专业回复
 - 🤖 调用 DeepSeek（或其他 OpenAI 兼容模型）生成回复，回复统一加 `[rob]:` 前缀标识自动回复
 - 🧠 **AI 自动风险判断**：关于 CSM/LabVIEW 的明确回复直接自动发布；LLM 判定需人工介入的高危回复才写入 `pending/`
+- 👤 **白名单用户过滤**：维护者等白名单用户的评论仅记录，不触发 AI 处理，节省 token
+- 📚 **回复自学习**：所有回复内容（bot 回复 + 人工回复）自动加入 RAG 索引，持续提升回复质量
+- 📝 **文章摘要记录**：线程记录中使用 LLM 生成的简短摘要（而非全文），便于 AI 理解上下文
 - 🚨 异常自动告警：Cookie 失效、429 限流、预算超限 → 创建 GitHub Issue
 - 💰 每日 LLM 费用追踪与预算限制
 - 📊 追问上下文管理（多轮对话线程）
@@ -95,6 +98,8 @@ bot:
   max_new_comments_per_day: 100    # 每日上限
   llm_budget_usd_per_day: 0.50    # 每日 LLM 费用预算（超出后停止并告警）
   reply_prefix: "[rob]"            # 回复前缀，让用户知道这是自动回复
+  whitelist_users:                 # 白名单用户（维护者等），仅记录不做 AI 处理
+    - "your-zhihu-username"
 
 filter:
   spam_keywords:                   # 广告关键词（命中则跳过）
@@ -173,11 +178,15 @@ Zhihu-CSM-Reply-Robot/
 新评论
   │
   ▼
+白名单检查 ──→ 白名单用户 ──→ 仅记录到线程 + RAG（不做 AI 处理）
+  │
+  ▼
 规则过滤（垃圾/广告/重复）
   │  不使用 LLM，节省 token
   ▼
 RAG 检索知识库 + LLM 生成回复
   │  回复统一加 [rob]: 前缀
+  │  回复内容自动加入 RAG 学习
   ▼
 LLM 风险评估
   ├─ 明确的 CSM/LabVIEW 回复 ──→ 直接自动发布 ✅

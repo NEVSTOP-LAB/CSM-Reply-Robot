@@ -672,3 +672,197 @@ class TestTypeMapping:
         # 验证 post_comment 使用 "answer" 而非 "question"
         call_args = runner.zhihu_client.post_comment.call_args
         assert call_args.kwargs.get("object_type") == "answer"
+
+
+# ===== 白名单用户测试 =====
+
+class TestWhitelistUsers:
+    """验证白名单用户仅记录不做 AI 处理"""
+
+    def test_whitelist_user_skips_ai(self, runner, bot_root):
+        """白名单用户的评论不应触发 LLM"""
+        runner.load_config()
+        runner.settings["bot"]["whitelist_users"] = ["maintainer"]
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("wl_1", "已修复", author="maintainer"),
+        ]
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # LLM 不应被调用
+        runner.llm_client.generate_reply.assert_not_called()
+        # 但评论应被记录到 seen_ids
+        assert "wl_1" in runner._seen_ids
+
+    def test_whitelist_user_recorded_to_rag(self, runner, bot_root):
+        """白名单用户的评论应索引到 RAG"""
+        runner.load_config()
+        runner.settings["bot"]["whitelist_users"] = ["maintainer"]
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("wl_2", "关于 CSM 架构说明", author="maintainer"),
+        ]
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # RAG 索引应被调用
+        runner.rag_retriever.index_human_reply.assert_called_once()
+
+    def test_non_whitelist_user_processed_normally(self, runner, bot_root):
+        """非白名单用户应正常走 AI 处理流程"""
+        runner.load_config()
+        runner.settings["bot"]["whitelist_users"] = ["maintainer"]
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("nwl_1", "CSM 是什么？", author="普通用户"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复内容", 100)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # LLM 应被调用
+        runner.llm_client.generate_reply.assert_called_once()
+
+    def test_empty_whitelist_no_skip(self, runner, bot_root):
+        """空白名单不应跳过任何用户"""
+        runner.load_config()
+        runner.settings["bot"]["whitelist_users"] = []
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("ewl_1", "问题", author="anyone"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        runner.llm_client.generate_reply.assert_called_once()
+
+
+# ===== 回复索引到 RAG 测试 =====
+
+class TestReplyIndexToRAG:
+    """验证所有回复内容加入 RAG 学习"""
+
+    def test_bot_reply_indexed_to_rag(self, runner, bot_root):
+        """Bot 回复应被索引到 RAG"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("rag_1", "如何使用 CSM？"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("CSM 使用指南...", 100)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # RAG index_human_reply 应被调用（bot 回复也会被索引）
+        runner.rag_retriever.index_human_reply.assert_called_once()
+        call_args = runner.rag_retriever.index_human_reply.call_args
+        assert "如何使用 CSM？" in call_args.kwargs.get("question", call_args[1].get("question", ""))
+
+
+# ===== 文章摘要记录测试 =====
+
+class TestArticleSummary:
+    """验证文章使用 LLM 摘要而非全文"""
+
+    def test_article_summary_stored_in_meta(self, runner, bot_root):
+        """文章摘要应存储在 article_meta 中并传递给线程"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("sum_1", "问题"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = "LLM 生成的摘要"
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.thread_manager = MagicMock()
+        runner.thread_manager.get_or_create_thread.return_value = "mock_path"
+        runner.thread_manager.build_context_messages.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 验证 summarize_article 被调用
+        runner.llm_client.summarize_article.assert_called_once()
+
+        # 验证 get_or_create_thread 调用时 article_meta 包含 summary
+        calls = runner.thread_manager.get_or_create_thread.call_args_list
+        for call in calls:
+            meta = call.kwargs.get("article_meta", call[1].get("article_meta", {}))
+            if "summary" in meta:
+                assert meta["summary"] == "LLM 生成的摘要"

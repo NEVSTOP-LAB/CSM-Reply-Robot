@@ -8,6 +8,7 @@ bot:
   max_new_comments_per_day: 100     # 每日上限（防止费用/风控异常）
   llm_budget_usd_per_day: 0.50     # 每日 LLM 费用预算上限，超出进 pending/
   reply_prefix: "[rob]"             # 回复前缀，标识自动回复
+  whitelist_users: []               # 白名单用户列表（维护者等），仅记录不做 AI 处理
 
 llm:
   base_url: "https://api.deepseek.com"   # DeepSeek API 端点（OpenAI 兼容）

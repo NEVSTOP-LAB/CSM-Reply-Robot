@@ -88,6 +88,7 @@ class ThreadManager:
             "article_id": article_id,
             "article_title": article_meta.get("title", ""),
             "article_url": article_meta.get("url", ""),
+            "article_summary": article_meta.get("summary", ""),
             "commenter": root_comment.get("author", "未知用户"),
             "started_at": now,
             "last_updated": now,

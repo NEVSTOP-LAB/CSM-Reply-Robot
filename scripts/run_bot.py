@@ -297,16 +297,20 @@ class BotRunner:
 
         logger.info(f"文章 {article_id}: 发现 {len(new_comments)} 条新评论")
 
-        # 获取文章摘要（缓存）
+        # 获取文章摘要（缓存）— 使用 LLM 生成简短摘要，便于 AI 理解上下文
+        # 不记录文章全文，只保留摘要
         article_summary = ""
         if self.llm_client:
             try:
                 article_summary = self.llm_client.summarize_article(
                     title=article.get("title", ""),
-                    content=article.get("title", ""),  # 简化：使用标题
+                    content=article.get("title", ""),
                 )
             except Exception as e:
                 logger.warning(f"文章摘要生成失败: {e}")
+
+        # 将摘要写入 article_meta，供线程管理器使用
+        article_meta["summary"] = article_summary
 
         # 检索文章相关 Wiki 上下文（批量复用）
         context_chunks = []
@@ -371,6 +375,13 @@ class BotRunner:
         # 参考 AI-013: 真人回复高权重索引
         if comment.is_author_reply and self.rag_retriever:
             self._handle_human_reply(article, article_meta, comment)
+            self._seen_ids.add(comment.id)
+            return
+
+        # 白名单用户：仅记录到线程，不做 AI 处理
+        whitelist = self.settings.get("bot", {}).get("whitelist_users", [])
+        if comment.author in whitelist:
+            self._handle_whitelist_comment(article, article_meta, comment)
             self._seen_ids.add(comment.id)
             return
 
@@ -471,6 +482,18 @@ class BotRunner:
                 tokens=total_tokens,
             )
 
+        # 将 QA 对（用户评论 + bot 回复）索引到 RAG，用于后续检索学习
+        if self.rag_retriever and reply_content:
+            try:
+                self.rag_retriever.index_human_reply(
+                    question=comment_dict["content"],
+                    reply=reply_content,
+                    article_id=article["id"],
+                    thread_id=comment.parent_id or comment.id if hasattr(comment, 'parent_id') else comment.id,
+                )
+            except Exception as e:
+                logger.warning("Bot 回复索引到 RAG 失败: %s", e)
+
         # AI 风险评估：决定自动发布或写入 pending/
         if self.llm_client and reply_content and self.zhihu_client:
             risk_level, risk_reason = self.llm_client.assess_risk(
@@ -566,6 +589,48 @@ class BotRunner:
 
             self.rag_retriever.index_human_reply(
                 question=question,
+                reply=comment.content,
+                article_id=article["id"],
+                thread_id=comment.parent_id or comment.id,
+            )
+
+    def _handle_whitelist_comment(self, article: dict, article_meta: dict, comment):
+        """处理白名单用户的评论
+
+        白名单用户（维护者等）的回复仅记录到对话线程和 RAG，
+        不触发 AI 生成回复，节省 token。
+
+        Args:
+            article: 文章配置
+            article_meta: 文章元信息
+            comment: Comment 对象
+        """
+        logger.info(
+            "白名单用户 %s 的评论，仅记录: comment_id=%s",
+            comment.author, comment.id,
+        )
+
+        # 记录到对话线程
+        if self.thread_manager:
+            root_comment = {
+                "id": comment.parent_id or comment.id,
+                "author": comment.author,
+            }
+            thread_path = self.thread_manager.get_or_create_thread(
+                article_id=article["id"],
+                root_comment=root_comment,
+                article_meta=article_meta,
+            )
+            self.thread_manager.append_turn(
+                thread_path=thread_path,
+                author=comment.author,
+                content=comment.content,
+            )
+
+        # 索引到 RAG 供后续检索
+        if self.rag_retriever:
+            self.rag_retriever.index_human_reply(
+                question=comment.content,
                 reply=comment.content,
                 article_id=article["id"],
                 thread_id=comment.parent_id or comment.id,
