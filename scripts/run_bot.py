@@ -321,8 +321,19 @@ class BotRunner:
         # 将摘要写入 article_meta，供线程管理器使用
         article_meta["summary"] = article_summary
 
+        # 本次 run 处理计数（FIX-16：实现 max_new_comments_per_run 上限）
+        max_per_run = self.settings.get("bot", {}).get("max_new_comments_per_run", 0)
+        run_processed = 0
+
         for comment in new_comments:
             if not self._check_daily_limit():
+                break
+
+            # 单次运行上限检查（FIX-16）
+            if max_per_run > 0 and run_processed >= max_per_run:
+                logger.info(
+                    "已达单次运行上限 %d 条，停止处理（FIX-16）", max_per_run
+                )
                 break
 
             try:
@@ -333,6 +344,7 @@ class BotRunner:
                     article_summary=article_summary,
                 )
                 self._consecutive_failures = 0
+                run_processed += 1  # FIX-16
             except BudgetExceededError as e:
                 logger.warning(f"预算超限: {e}")
                 raise  # 向上传播，由 run_articles 处理告警
