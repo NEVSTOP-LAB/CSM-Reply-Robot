@@ -413,6 +413,7 @@ class BotRunner:
 
         # 构建线程和历史上下文
         history_messages = []
+        thread_path = None  # FIX-15：初始化为 None，后续复用
         if self.thread_manager:
             root_comment = {
                 "id": comment.parent_id or comment.id,
@@ -431,6 +432,7 @@ class BotRunner:
                 thread_path=thread_path,
                 author=comment.author,
                 content=comment.content,
+                is_followup=comment.parent_id is not None,
             )
 
             # 获取历史上下文
@@ -471,16 +473,8 @@ class BotRunner:
                     usd_cost=self.llm_client.total_cost_usd - prev_cost,
                 )
 
-        # 追加 Bot 回复到线程
-        if self.thread_manager and reply_content:
-            thread_path = self.thread_manager.get_or_create_thread(
-                article_id=article["id"],
-                root_comment={
-                    "id": comment.parent_id or comment.id,
-                    "author": comment.author,
-                },
-                article_meta=article_meta,
-            )
+        # 追加 Bot 回复到线程（FIX-15：直接复用已有 thread_path，不再重复调用 get_or_create_thread）
+        if self.thread_manager and reply_content and thread_path:
             self.thread_manager.append_turn(
                 thread_path=thread_path,
                 author="Bot",
