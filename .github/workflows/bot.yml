@@ -26,6 +26,12 @@ permissions:
   contents: write
   issues: write    # 告警模块需要创建 Issue（AI-010）
 
+# 并发控制：同一时间只允许一个 bot 实例运行（FIX-22）
+# 避免多次 workflow 并发读写 seen_ids.json 导致数据损坏
+concurrency:
+  group: reply-bot
+  cancel-in-progress: false
+
 jobs:
   reply-bot:
     runs-on: ubuntu-latest
@@ -65,13 +71,14 @@ jobs:
 
       # 5. 缓存向量数据库（ChromaDB + reply_index）
       # 参考 AI-011：向量库外部化方案
+      # 使用 Wiki 文件哈希作为 cache key（FIX-08），内容不变时复用缓存
       - name: Cache vector stores
         uses: actions/cache@v4
         with:
           path: |
             data/vector_store
             data/reply_index
-          key: vectors-${{ runner.os }}-${{ github.run_number }}
+          key: vectors-${{ runner.os }}-${{ hashFiles('csm-wiki/**') }}
           restore-keys: |
             vectors-${{ runner.os }}-
 

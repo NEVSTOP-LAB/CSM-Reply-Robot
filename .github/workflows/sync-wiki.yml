@@ -57,7 +57,7 @@ jobs:
           path: |
             data/vector_store
             data/reply_index
-          key: vectors-${{ runner.os }}-${{ github.run_number }}
+          key: vectors-${{ runner.os }}-${{ hashFiles('csm-wiki/**') }}
           restore-keys: |
             vectors-${{ runner.os }}-
 

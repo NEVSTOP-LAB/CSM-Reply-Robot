@@ -38,12 +38,23 @@ logger = logging.getLogger(__name__)
 # ─── 异常定义 ──────────────────────────────────────────────────
 
 class ZhihuAuthError(Exception):
-    """Cookie 失效或认证失败（HTTP 401/403）"""
-    pass
+    """Cookie 失效或认证失败（HTTP 401/403）
+
+    Attributes:
+        status_code: 触发认证失败的 HTTP 状态码（401 或 403）
+    """
+    def __init__(self, message: str = "", status_code: int = 401):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ZhihuRateLimitError(Exception):
     """请求频率超限（HTTP 429），重试后仍失败"""
+    pass
+
+
+class ZhihuRequestError(Exception):
+    """网络请求失败（DNS/超时等），重试后仍失败（FIX-10）"""
     pass
 
 
@@ -152,7 +163,7 @@ class ZhihuClient:
 
         Args:
             object_id: 文章 ID 或回答 ID
-            object_type: "article" 或 "question"
+            object_type: "article"、"answer" 或 "question"（同 "answer"，保持向后兼容）
 
         Returns:
             完整的 API URL
@@ -162,10 +173,13 @@ class ZhihuClient:
         """
         if object_type == "article":
             return f"{self.API_READ_BASE}/articles/{object_id}/comments"
-        elif object_type == "question":
+        elif object_type in ("answer", "question"):
+            # answer: 使用 answer_id；question 为向后兼容保留（同 answer）
             return f"{self.API_READ_BASE}/answers/{object_id}/comments"
         else:
-            raise ValueError(f"不支持的 object_type: {object_type}，应为 'article' 或 'question'")
+            raise ValueError(
+                f"不支持的 object_type: {object_type}，应为 'article'、'answer' 或 'question'"
+            )
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         """
@@ -181,8 +195,9 @@ class ZhihuClient:
             HTTP 响应对象
 
         Raises:
-            ZhihuAuthError: 401/403
-            ZhihuRateLimitError: 429 重试后仍失败
+            ZhihuAuthError: 401/403 认证失败
+            ZhihuRateLimitError: 429 重试耗尽仍限流
+            ZhihuRequestError: 其他请求失败（HTTP 5xx、网络连接/超时等）
         """
         last_exception: Optional[Exception] = None
 
@@ -194,7 +209,8 @@ class ZhihuClient:
                 if response.status_code in (401, 403):
                     logger.error("认证失败 (HTTP %d)，Cookie 可能已失效", response.status_code)
                     raise ZhihuAuthError(
-                        f"认证失败 HTTP {response.status_code}: Cookie 失效或权限不足"
+                        f"认证失败 HTTP {response.status_code}: Cookie 失效或权限不足",
+                        status_code=response.status_code,
                     )
 
                 # 限流 → 指数退避重试
@@ -215,18 +231,39 @@ class ZhihuClient:
 
             except ZhihuAuthError:
                 raise
-            except requests.RequestException as e:
+            except requests.HTTPError as e:
+                # HTTP 错误（4xx/5xx）：记录并重试
+                # REV-4：区别于网络连接/超时等纯网络异常
                 last_exception = e
                 if attempt < self.max_retries - 1:
                     wait = (2 ** attempt) + random.random()
                     logger.warning(
-                        "请求异常 (%s)，第 %d/%d 次重试，等待 %.1f 秒",
+                        "HTTP 错误 (%s)，第 %d/%d 次重试，等待 %.1f 秒",
+                        e, attempt + 1, self.max_retries, wait
+                    )
+                    time.sleep(wait)
+            except requests.RequestException as e:
+                # 网络类异常（DNS 失败、连接超时等）
+                last_exception = e
+                if attempt < self.max_retries - 1:
+                    wait = (2 ** attempt) + random.random()
+                    logger.warning(
+                        "网络异常 (%s)，第 %d/%d 次重试，等待 %.1f 秒",
                         e, attempt + 1, self.max_retries, wait
                     )
                     time.sleep(wait)
 
-        raise ZhihuRateLimitError(
-            f"请求失败，已重试 {self.max_retries} 次: {last_exception}"
+        # 耗尽重试：按失败原因区分异常类型（REV-4）
+        if isinstance(last_exception, ZhihuRateLimitError):
+            raise ZhihuRateLimitError(
+                f"请求失败，已重试 {self.max_retries} 次: {last_exception}"
+            )
+        if isinstance(last_exception, requests.HTTPError):
+            raise ZhihuRequestError(
+                f"HTTP 请求失败，已重试 {self.max_retries} 次: {last_exception}"
+            )
+        raise ZhihuRequestError(
+            f"网络请求失败，已重试 {self.max_retries} 次: {last_exception}"
         )
 
     def get_comments(
@@ -390,10 +427,10 @@ class ZhihuClient:
                 )
                 return False
         except ZhihuAuthError:
-            # 认证失败时不抛出，返回 False，让主流程写入 pending/
-            # 参考: docs/plan/README.md § AI-003 第 3 点
-            logger.error("评论发布失败: Cookie 失效或权限不足")
-            return False
+            # 认证失败（Cookie 失效/权限不足）→ 重新抛出（FIX-09）
+            # 让主流程捕获并触发 Cookie 失效告警，而非悄悄写入 pending/
+            logger.error("评论发布失败: Cookie 失效或权限不足，重新抛出 ZhihuAuthError")
+            raise
         except Exception as e:
             logger.error("评论发布异常: %s", e)
             return False
@@ -473,7 +510,7 @@ class ZhihuClient:
                     "id": answer_id,
                     "title": question.get("title", item.get("excerpt", "")),
                     "url": f"https://www.zhihu.com/question/{question.get('id', '')}/answer/{answer_id}",
-                    "type": "question",
+                    "type": "answer",
                 })
 
             paging = data.get("paging", {})
@@ -482,4 +519,54 @@ class ZhihuClient:
             offset += self.PAGE_LIMIT
 
         logger.info("用户 %s 获取到 %d 个回答", user_id, len(all_answers))
+        return all_answers
+
+    def get_question_answers(self, question_id: str) -> list[dict]:
+        """
+        获取指定问题下的全部回答列表
+        参考: FIX-01 — question 类型需先解析 answer_id
+
+        用于展开 type="question" 的监控目标，获取该问题下所有回答的 answer_id，
+        后续用 answer_id 调用评论读写接口。
+
+        Args:
+            question_id: 知乎问题 ID
+
+        Returns:
+            回答字典列表，每项含 id（answer_id）/title/url/type="answer"
+        """
+        url = f"{self.API_READ_BASE}/questions/{question_id}/answers"
+        all_answers: list[dict] = []
+        offset = 0
+
+        while True:
+            params = {"limit": self.PAGE_LIMIT, "offset": offset}
+            delay = random.uniform(self.REQUEST_DELAY_MIN, self.REQUEST_DELAY_MAX)
+            time.sleep(delay)
+
+            logger.debug("请求问题回答: %s offset=%d", url, offset)
+            response = self._request_with_retry("GET", url, params=params)
+            data = response.json()
+
+            items = data.get("data", [])
+            for item in items:
+                answer_id = str(item.get("id", ""))
+                author = item.get("author", {}).get("name", "unknown")
+                all_answers.append({
+                    "id": answer_id,
+                    "title": item.get("question", {}).get("title", ""),
+                    "url": (
+                        f"https://www.zhihu.com/question/{question_id}"
+                        f"/answer/{answer_id}"
+                    ),
+                    "type": "answer",
+                    "_answer_author": author,
+                })
+
+            paging = data.get("paging", {})
+            if paging.get("is_end", True):
+                break
+            offset += self.PAGE_LIMIT
+
+        logger.info("问题 %s 获取到 %d 个回答", question_id, len(all_answers))
         return all_answers

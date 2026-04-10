@@ -23,6 +23,7 @@ from scripts.zhihu_client import (
     ZhihuClient,
     ZhihuAuthError,
     ZhihuRateLimitError,
+    ZhihuRequestError,
     Comment,
 )
 
@@ -106,8 +107,13 @@ class TestBuildReadUrl:
         assert url == "https://www.zhihu.com/api/v4/articles/12345/comments"
 
     def test_question_url(self, client):
-        """问题评论应调用 answers 端点"""
+        """问题评论（向后兼容）应调用 answers 端点"""
         url = client._build_read_url("67890", "question")
+        assert url == "https://www.zhihu.com/api/v4/answers/67890/comments"
+
+    def test_answer_url(self, client):
+        """answer 类型应调用 answers 端点（FIX-01）"""
+        url = client._build_read_url("67890", "answer")
         assert url == "https://www.zhihu.com/api/v4/answers/67890/comments"
 
     def test_invalid_type_raises(self, client):
@@ -215,12 +221,25 @@ class TestAuthErrors:
 
     @patch("scripts.zhihu_client.time.sleep")
     def test_403_raises_auth_error(self, mock_sleep, client):
-        """403 响应应抛出 ZhihuAuthError"""
+        """403 响应应抛出 ZhihuAuthError 并携带 status_code=403（FIX-11）"""
         resp = _make_response(403)
 
         with patch.object(client.session, "request", return_value=resp):
-            with pytest.raises(ZhihuAuthError, match="认证失败"):
+            with pytest.raises(ZhihuAuthError) as exc_info:
                 client.get_comments("99", "article")
+
+        assert exc_info.value.status_code == 403
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_401_auth_error_carries_status_code(self, mock_sleep, client):
+        """401 ZhihuAuthError 应携带 status_code=401（FIX-11）"""
+        resp = _make_response(401)
+
+        with patch.object(client.session, "request", return_value=resp):
+            with pytest.raises(ZhihuAuthError) as exc_info:
+                client.get_comments("99", "article")
+
+        assert exc_info.value.status_code == 401
 
 
 # ===== 限流重试测试 =====
@@ -256,6 +275,48 @@ class TestRateLimit:
             client.session, "request", return_value=resp_429
         ):
             with pytest.raises(ZhihuRateLimitError, match="重试"):
+                client.get_comments("99", "article")
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_network_error_raises_request_error(self, mock_sleep, client):
+        """网络类异常耗尽重试后应抛出 ZhihuRequestError 而非 ZhihuRateLimitError（FIX-10）"""
+        with patch.object(
+            client.session, "request",
+            side_effect=requests.exceptions.ConnectionError("DNS 失败")
+        ):
+            with pytest.raises(ZhihuRequestError):
+                client.get_comments("99", "article")
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_timeout_error_raises_request_error(self, mock_sleep, client):
+        """超时异常耗尽重试后应抛出 ZhihuRequestError（FIX-10）"""
+        with patch.object(
+            client.session, "request",
+            side_effect=requests.exceptions.Timeout("请求超时")
+        ):
+            with pytest.raises(ZhihuRequestError):
+                client.get_comments("99", "article")
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_http_5xx_raises_request_error(self, mock_sleep, client):
+        """HTTP 5xx 耗尽重试后应抛出 ZhihuRequestError（REV-4：区分 HTTPError vs 纯网络异常）"""
+        resp_500 = _make_response(500)
+        resp_500.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "500 Server Error"
+        )
+
+        with patch.object(client.session, "request", return_value=resp_500):
+            with pytest.raises(ZhihuRequestError, match="HTTP"):
+                client.get_comments("99", "article")
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_network_error_message_says_network(self, mock_sleep, client):
+        """纯网络异常的错误信息应包含'网络'（REV-4：错误文案区分）"""
+        with patch.object(
+            client.session, "request",
+            side_effect=requests.exceptions.ConnectionError("网络中断")
+        ):
+            with pytest.raises(ZhihuRequestError, match="网络"):
                 client.get_comments("99", "article")
 
 
@@ -354,14 +415,13 @@ class TestPostComment:
         assert json_data["parent_id"] == "777"
 
     @patch("scripts.zhihu_client.time.sleep")
-    def test_post_auth_failure_returns_false(self, mock_sleep, client):
-        """发布时遇到 401 应返回 False（不抛异常）"""
+    def test_post_auth_failure_raises(self, mock_sleep, client):
+        """发布时遇到 401 应重新抛出 ZhihuAuthError（FIX-09）"""
         resp = _make_response(401)
 
         with patch.object(client.session, "request", return_value=resp):
-            result = client.post_comment("99", "article", "内容")
-
-        assert result is False
+            with pytest.raises(ZhihuAuthError):
+                client.post_comment("99", "article", "内容")
 
     def test_post_without_xsrf_returns_false(self):
         """没有 _xsrf 时应返回 False"""
@@ -379,3 +439,64 @@ class TestPostComment:
             result = client.post_comment("99", "article", "内容")
 
         assert result is False
+
+
+# ===== 问题回答列表测试（FIX-01）=====
+
+class TestGetQuestionAnswers:
+    """验证 get_question_answers 通过问题 ID 获取回答列表"""
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_returns_answer_type(self, mock_sleep, client):
+        """返回的条目 type 应为 'answer'（FIX-01）"""
+        resp = _make_response(200, {
+            "data": [
+                {
+                    "id": 111111,
+                    "author": {"name": "作者A"},
+                    "question": {"id": 99999, "title": "问题标题"},
+                }
+            ],
+            "paging": {"is_end": True},
+        })
+
+        with patch.object(client.session, "request", return_value=resp):
+            result = client.get_question_answers("99999")
+
+        assert len(result) == 1
+        assert result[0]["id"] == "111111"
+        assert result[0]["type"] == "answer"
+        assert "99999" in result[0]["url"]
+        assert "111111" in result[0]["url"]
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_calls_questions_endpoint(self, mock_sleep, client):
+        """应调用 /questions/{id}/answers 端点（FIX-01）"""
+        resp = _make_response(200, {
+            "data": [],
+            "paging": {"is_end": True},
+        })
+
+        with patch.object(client.session, "request", return_value=resp) as mock_req:
+            client.get_question_answers("12345")
+
+        call_args = mock_req.call_args
+        assert "questions/12345/answers" in str(call_args)
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_get_user_answers_returns_answer_type(self, mock_sleep, client):
+        """get_user_answers 返回的条目 type 应为 'answer'（FIX-01）"""
+        resp = _make_response(200, {
+            "data": [
+                {
+                    "id": 222222,
+                    "question": {"id": 88888, "title": "回答的问题"},
+                }
+            ],
+            "paging": {"is_end": True},
+        })
+
+        with patch.object(client.session, "request", return_value=resp):
+            result = client.get_user_answers("some_user")
+
+        assert result[0]["type"] == "answer"

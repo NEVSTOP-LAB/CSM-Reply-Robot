@@ -87,9 +87,9 @@ def bot_root(tmp_path: Path) -> Path:
 
     # 创建必要目录
     (root / "data").mkdir()
+    (root / "data" / "pending").mkdir()
     (root / "csm-wiki").mkdir()
     (root / "archive").mkdir()
-    (root / "pending").mkdir()
 
     return root
 
@@ -214,7 +214,7 @@ class TestProcessArticle:
         runner.process_article(runner.articles[0])
 
         # 验证回复被写入 pending/
-        pending_files = list((bot_root / "pending").glob("*.md"))
+        pending_files = list((bot_root / "data" / "pending").glob("*.md"))
         assert len(pending_files) >= 1
 
         # 验证 pending 文件包含 object_type 元数据
@@ -365,7 +365,7 @@ class TestWritePending:
             comment_id="222",
         )
 
-        pending_files = list((bot_root / "pending").glob("*.md"))
+        pending_files = list((bot_root / "data" / "pending").glob("*.md"))
         assert len(pending_files) == 1
 
         content = pending_files[0].read_text()
@@ -381,7 +381,7 @@ class TestWritePending:
 
         runner._write_pending(article, "评论", "回复", "BBB")
 
-        assert (bot_root / "pending" / "AAA_BBB.md").exists()
+        assert (bot_root / "data" / "pending" / "AAA_BBB.md").exists()
 
 
 # ===== AI 风险评估与自动发布测试 =====
@@ -421,7 +421,7 @@ class TestRiskAssessment:
         # 验证自动发布被调用
         runner.zhihu_client.post_comment.assert_called_once()
         # 不应有 pending 文件
-        pending_files = list((bot_root / "pending").glob("*.md"))
+        pending_files = list((bot_root / "data" / "pending").glob("*.md"))
         assert len(pending_files) == 0
 
     def test_risky_reply_goes_to_pending(self, runner, bot_root):
@@ -454,7 +454,7 @@ class TestRiskAssessment:
         # 不应自动发布
         runner.zhihu_client.post_comment.assert_not_called()
         # 应写入 pending/
-        pending_files = list((bot_root / "pending").glob("*.md"))
+        pending_files = list((bot_root / "data" / "pending").glob("*.md"))
         assert len(pending_files) == 1
         content = pending_files[0].read_text()
         assert "risk_reason" in content
@@ -487,7 +487,7 @@ class TestRiskAssessment:
 
         # 发布被调用但失败，应回退到 pending
         runner.zhihu_client.post_comment.assert_called_once()
-        pending_files = list((bot_root / "pending").glob("*.md"))
+        pending_files = list((bot_root / "data" / "pending").glob("*.md"))
         assert len(pending_files) == 1
 
 
@@ -565,20 +565,38 @@ class TestSeenIdsMigration:
 class TestExpandArticles:
     """验证 column/user_answers 类型展开"""
 
-    def test_article_and_question_pass_through(self, runner):
-        """article/question 类型应直接传递"""
+    def test_article_and_answer_pass_through(self, runner):
+        """article/answer 类型应直接传递（FIX-01）"""
         runner.load_config()
         runner.init_modules()
         runner.zhihu_client = MagicMock()
 
         runner.articles = [
             {"id": "1", "type": "article"},
-            {"id": "2", "type": "question"},
+            {"id": "20", "type": "answer"},
         ]
         result = runner._expand_articles()
         assert len(result) == 2
         assert result[0]["type"] == "article"
-        assert result[1]["type"] == "question"
+        assert result[1]["type"] == "answer"
+
+    def test_question_expands_to_answers(self, runner):
+        """question 类型应通过 API 展开为 answer 列表（FIX-01）"""
+        runner.load_config()
+        runner.init_modules()
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_question_answers.return_value = [
+            {"id": "30", "title": "回答1", "url": "url1", "type": "answer"},
+            {"id": "31", "title": "回答2", "url": "url2", "type": "answer"},
+        ]
+
+        runner.articles = [
+            {"id": "999", "type": "question", "title": "问题标题"},
+        ]
+        result = runner._expand_articles()
+        assert len(result) == 2
+        assert all(a["type"] == "answer" for a in result)
+        runner.zhihu_client.get_question_answers.assert_called_once_with("999")
 
     def test_column_expands_to_articles(self, runner):
         """column 类型应展开为文章列表"""
@@ -598,12 +616,12 @@ class TestExpandArticles:
         assert all(a["type"] == "article" for a in result)
 
     def test_user_answers_expands(self, runner):
-        """user_answers 类型应展开为回答列表"""
+        """user_answers 类型应展开为回答列表（type=answer，FIX-01）"""
         runner.load_config()
         runner.init_modules()
         runner.zhihu_client = MagicMock()
         runner.zhihu_client.get_user_answers.return_value = [
-            {"id": "20", "title": "回答1", "url": "url1", "type": "question"},
+            {"id": "20", "title": "回答1", "url": "url1", "type": "answer"},
         ]
 
         runner.articles = [
@@ -611,7 +629,7 @@ class TestExpandArticles:
         ]
         result = runner._expand_articles()
         assert len(result) == 1
-        assert result[0]["type"] == "question"
+        assert result[0]["type"] == "answer"
 
     def test_column_expand_failure_skips(self, runner):
         """展开失败时应跳过该条目"""
@@ -659,7 +677,7 @@ class TestTypeMapping:
         runner.rag_retriever = MagicMock()
         runner.rag_retriever.retrieve.return_value = []
 
-        # 使用 question 类型的文章
+        # 使用 question 类型的文章（向后兼容）
         runner.articles = [{
             "id": "999",
             "title": "知乎问题",
@@ -670,6 +688,43 @@ class TestTypeMapping:
         runner.process_article(runner.articles[0])
 
         # 验证 post_comment 使用 "answer" 而非 "question"
+        call_args = runner.zhihu_client.post_comment.call_args
+        assert call_args.kwargs.get("object_type") == "answer"
+
+    def test_answer_type_published_as_answer(self, runner):
+        """answer 类型（FIX-01 展开结果）应直接以 answer 发布"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("ans_1", "LabVIEW 问题"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        # 使用 answer 类型（FIX-01 展开后的条目）
+        runner.articles = [{
+            "id": "777",
+            "title": "某回答",
+            "url": "https://example.com",
+            "type": "answer",
+        }]
+
+        runner.process_article(runner.articles[0])
+
         call_args = runner.zhihu_client.post_comment.call_args
         assert call_args.kwargs.get("object_type") == "answer"
 
@@ -785,7 +840,45 @@ class TestWhitelistUsers:
         runner.llm_client.generate_reply.assert_called_once()
 
 
-# ===== 回复索引到 RAG 测试 =====
+# ===== 真人回复索引 question 取值测试（FIX-12）=====
+
+class TestHumanReplyQuestion:
+    """验证 _handle_human_reply 取最近 user 消息作 question（FIX-12）"""
+
+    def test_human_reply_uses_last_user_message(self, runner, bot_root):
+        """真人回复索引时 question 应为最近 user 消息而非 Bot 消息（FIX-12）"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("hr_1", "作者给出的人工回答", is_author_reply=True),
+        ]
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        # 模拟 thread_manager 返回 Bot 回复在前、用户提问在后的历史
+        runner.thread_manager = MagicMock()
+        runner.thread_manager.get_or_create_thread.return_value = "mock_path"
+        runner.thread_manager.build_context_messages.return_value = [
+            {"role": "assistant", "content": "[rob]: 上一次 Bot 回复"},
+            {"role": "user", "content": "用户的真实提问"},
+        ]
+
+        runner.process_article(runner.articles[0])
+
+        call_args = runner.rag_retriever.index_human_reply.call_args
+        question = call_args.kwargs.get("question", call_args[0][0] if call_args[0] else "")
+        assert question == "用户的真实提问", (
+            f"question 应为最近 user 消息，但实际为: {question!r}"
+        )
+
+
+
 
 class TestReplyIndexToRAG:
     """验证所有回复内容加入 RAG 学习"""
@@ -824,6 +917,140 @@ class TestReplyIndexToRAG:
         reply_arg = call_args.kwargs.get("reply", call_args[1].get("reply", ""))
         assert "CSM 使用指南" in reply_arg
 
+    def test_risky_reply_not_indexed_to_rag(self, runner, bot_root):
+        """高危回复不应索引到 RAG（FIX-06）"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("risky_rag", "敏感问题"),
+        ]
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复内容", 100)
+        runner.llm_client.assess_risk.return_value = ("risky", "超出范围")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 高危回复不应索引到 RAG
+        runner.rag_retriever.index_human_reply.assert_not_called()
+
+    def test_failed_post_not_indexed_to_rag(self, runner, bot_root):
+        """发布失败的回复不应索引到 RAG（FIX-06）"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("fail_rag", "CSM 问题"),
+        ]
+        runner.zhihu_client.post_comment.return_value = False  # 发布失败
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复内容", 100)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 发布失败不应索引到 RAG
+        runner.rag_retriever.index_human_reply.assert_not_called()
+
+
+# ===== RAG 检索使用评论内容测试（FIX-02 / TEST-01）=====
+
+class TestRAGQueryByComment:
+    """验证 RAG 检索使用评论内容而非文章标题（FIX-02 / TEST-01）"""
+
+    def test_rag_retrieve_called_with_comment_content(self, runner, bot_root):
+        """RAG retrieve 应以评论内容而非文章标题作为 query（FIX-02）"""
+        runner.load_config()
+        runner.init_modules()
+
+        comment_text = "如何在 LabVIEW 中实现 CSM 状态机？"
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("rag_q1", comment_text),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复内容", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 验证 retrieve 被调用，且 query 参数为评论内容而非文章标题
+        runner.rag_retriever.retrieve.assert_called_once()
+        call_kwargs = runner.rag_retriever.retrieve.call_args.kwargs
+        query_used = call_kwargs.get("query", runner.rag_retriever.retrieve.call_args[0][0] if runner.rag_retriever.retrieve.call_args[0] else "")
+        assert query_used == comment_text, (
+            f"RAG query 应为评论内容，但实际为: {query_used!r}"
+        )
+
+    def test_rag_retrieve_per_comment_not_shared(self, runner, bot_root):
+        """多条评论各自独立检索（FIX-02）"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("rag_m1", "第一条评论", author="user_a"),
+            _make_comment("rag_m2", "第二条评论", author="user_b"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 两条评论各自触发一次 retrieve
+        assert runner.rag_retriever.retrieve.call_count == 2
+        queries = [
+            call.kwargs.get("query", call[0][0] if call[0] else "")
+            for call in runner.rag_retriever.retrieve.call_args_list
+        ]
+        assert "第一条评论" in queries
+        assert "第二条评论" in queries
+
 
 # ===== 文章摘要记录测试 =====
 
@@ -834,6 +1061,15 @@ class TestArticleSummary:
         """文章摘要应存储在 article_meta 中并传递给线程"""
         runner.load_config()
         runner.init_modules()
+
+        # 文章有 content 时应调用 summarize_article（FIX-05）
+        runner.articles = [{
+            "id": "99999",
+            "title": "测试文章",
+            "url": "https://example.com",
+            "type": "article",
+            "content": "这是文章正文内容，介绍 CSM 方法论。",
+        }]
 
         runner.zhihu_client = MagicMock()
         runner.zhihu_client.get_comments.return_value = [
@@ -873,3 +1109,109 @@ class TestArticleSummary:
                 assert meta["summary"] == "LLM 生成的摘要"
                 found_summary = True
         assert found_summary, "至少一次 get_or_create_thread 调用应包含 summary"
+
+    def test_no_content_uses_title_as_summary(self, runner, bot_root):
+        """无正文时应直接用 title 作为摘要，不调用 LLM（FIX-05）"""
+        runner.load_config()
+        runner.init_modules()
+
+        # 文章无 content 字段（通常 articles.yaml 只有 title）
+        runner.articles = [{
+            "id": "99999",
+            "title": "CSM 入门指南",
+            "url": "https://example.com",
+            "type": "article",
+            # 无 content 字段
+        }]
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("s1", "问题"),
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 无正文时不应调用 summarize_article（直接用 title）
+        runner.llm_client.summarize_article.assert_not_called()
+
+
+# ===== max_new_comments_per_run 测试（FIX-16）=====
+
+class TestMaxNewCommentsPerRun:
+    """验证 max_new_comments_per_run 单次运行上限（FIX-16）"""
+
+    def test_per_run_limit_respected(self, runner, bot_root):
+        """max_new_comments_per_run 应限制每次 run 处理的评论数（FIX-16）"""
+        runner.load_config()
+        runner.settings["bot"]["max_new_comments_per_run"] = 2
+        runner.init_modules()
+
+        # 提供 5 条来自不同用户的评论
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment(f"pr_{i}", f"问题{i}", author=f"user_{i}")
+            for i in range(5)
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 应只处理 2 条评论（max_new_comments_per_run=2）
+        assert runner.llm_client.generate_reply.call_count == 2
+
+    def test_no_per_run_limit_when_zero(self, runner, bot_root):
+        """max_new_comments_per_run=0 表示无限制"""
+        runner.load_config()
+        runner.settings["bot"]["max_new_comments_per_run"] = 0
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment(f"pr_{i}", f"问题{i}", author=f"user_{i}")
+            for i in range(4)
+        ]
+        runner.zhihu_client.post_comment.return_value = True
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.generate_reply.return_value = ("回复", 50)
+        runner.llm_client.assess_risk.return_value = ("safe", "安全")
+        runner.llm_client.total_cost_usd = 0.0
+        runner.llm_client.total_prompt_tokens = 0
+        runner.llm_client.total_completion_tokens = 0
+        runner.llm_client.total_cache_hit_tokens = 0
+        runner.llm_client.model = "deepseek-chat"
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.process_article(runner.articles[0])
+
+        # 无限制时 4 条全处理
+        assert runner.llm_client.generate_reply.call_count == 4

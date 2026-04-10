@@ -247,9 +247,12 @@ class ThreadManager:
             # 提取内容（去掉标题行）
             lines = section.split("\n", 1)
             body = lines[1].strip() if len(lines) > 1 else ""
-            # 去掉 markdown 引用符和分隔线
+            # 去掉分隔线
             body = body.replace("---", "").strip()
-            body = re.sub(r'^>\s*', '', body, flags=re.MULTILINE).strip()
+            # 只剥离整段的第一层引用前缀（FIX-13）：
+            # 仅去掉每行开头的一个 "> "，保留嵌套引用（>> 等）
+            # 避免破坏评论内容中合法的 Markdown 引用
+            body = re.sub(r'^> ?', '', body, flags=re.MULTILINE).strip()
 
             if body:
                 turns.append({

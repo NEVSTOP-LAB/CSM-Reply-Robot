@@ -227,6 +227,84 @@ class TestSyncWiki:
         # 不应抛异常
         r.sync_wiki()
 
+    def test_sync_embedding_failure_preserves_old_vectors(
+        self, retriever, wiki_dir
+    ):
+        """embedding 失败时旧向量应保留，不被删除（FIX-23）"""
+        # 首次同步建立基准向量
+        retriever.sync_wiki()
+        initial_count = retriever._wiki_collection.count()
+        assert initial_count > 0
+
+        # 修改文件，模拟 embedding 失败
+        (wiki_dir / "guide.md").write_text(
+            "# 新版指南\n\n新内容。\n", encoding="utf-8"
+        )
+
+        # 让 embedding 抛出异常
+        original_embed = retriever.embedding_fn.embed
+
+        call_count = [0]
+
+        def embed_with_failure(texts):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("模拟 embedding API 失败")
+            return original_embed(texts)
+
+        retriever.embedding_fn.embed = embed_with_failure
+        retriever.sync_wiki()
+
+        # 旧向量应仍然存在（embedding 失败不删除旧数据）
+        count_after = retriever._wiki_collection.count()
+        assert count_after >= initial_count, (
+            "embedding 失败时旧向量应保留，不应被删除（FIX-23）"
+        )
+
+    def test_sync_embedding_failure_allows_retry_next_run(
+        self, retriever, wiki_dir
+    ):
+        """embedding 失败时新 hash 不应写入，下次运行应能重试（REV-5）"""
+        # 首次同步，记录初始 hash
+        retriever.sync_wiki()
+        initial_hashes = retriever._load_wiki_hashes()
+        original_hash = initial_hashes.get("guide.md")
+        assert original_hash is not None
+
+        # 修改文件（产生新 hash）
+        (wiki_dir / "guide.md").write_text(
+            "# 更新内容\n\n应当被重试。\n", encoding="utf-8"
+        )
+        new_hash = retriever._compute_md5(wiki_dir / "guide.md")
+        assert new_hash != original_hash
+
+        original_embed = retriever.embedding_fn.embed
+        failed_once = [False]
+
+        def fail_first(texts):
+            if not failed_once[0]:
+                failed_once[0] = True
+                raise RuntimeError("模拟 API 失败")
+            return original_embed(texts)
+
+        # 第一次 sync：embedding 失败，hash 不应写入（REV-5）
+        retriever.embedding_fn.embed = fail_first
+        retriever.sync_wiki()
+
+        hashes_after_failure = retriever._load_wiki_hashes()
+        assert hashes_after_failure.get("guide.md") == original_hash, (
+            "embedding 失败时 hash 不应更新，下次运行才能重试（REV-5）"
+        )
+
+        # 第二次 sync：embedding 恢复正常，应能成功处理并更新 hash
+        retriever.embedding_fn.embed = original_embed
+        retriever.sync_wiki()
+
+        hashes_after_retry = retriever._load_wiki_hashes()
+        assert hashes_after_retry.get("guide.md") == new_hash, (
+            "embedding 成功后 hash 应被更新为最新值（REV-5）"
+        )
+
 
 # ===== 检索测试 =====
 
@@ -354,3 +432,43 @@ class TestEmbeddingFunction:
         ef = EmbeddingFunction(use_online=False)
         ef.embed(["test"])
         mock_local.assert_called_once_with(["test"])
+
+    def test_online_embedding_l2_normalized(self):
+        """线上 embedding 应被 L2 归一化（FIX-07）"""
+        ef = EmbeddingFunction(use_online=True)
+
+        # 模拟未归一化的线上 embedding 返回
+        raw_vec = [3.0, 4.0]  # norm = 5.0
+        mock_response = MagicMock()
+        mock_item = MagicMock()
+        mock_item.embedding = raw_vec
+        mock_response.data = [mock_item]
+
+        with patch.object(ef, "_get_online_client") as mock_client:
+            mock_client.return_value.embeddings.create.return_value = mock_response
+            result = ef.embed(["test text"])
+
+        assert len(result) == 1
+        vec = result[0]
+        # 验证向量已被 L2 归一化：|v| ≈ 1.0
+        norm = sum(x * x for x in vec) ** 0.5
+        assert abs(norm - 1.0) < 1e-6, f"期望 L2 归一化向量，|v|={norm}"
+        # 验证归一化正确：[3/5, 4/5]
+        assert abs(vec[0] - 0.6) < 1e-6
+        assert abs(vec[1] - 0.8) < 1e-6
+
+    def test_online_embedding_zero_vector_handled(self):
+        """零向量不应导致除零错误（FIX-07）"""
+        ef = EmbeddingFunction(use_online=True)
+
+        mock_response = MagicMock()
+        mock_item = MagicMock()
+        mock_item.embedding = [0.0, 0.0, 0.0]
+        mock_response.data = [mock_item]
+
+        with patch.object(ef, "_get_online_client") as mock_client:
+            mock_client.return_value.embeddings.create.return_value = mock_response
+            result = ef.embed(["test"])
+
+        # 零向量应原样返回，不抛异常
+        assert result[0] == [0.0, 0.0, 0.0]

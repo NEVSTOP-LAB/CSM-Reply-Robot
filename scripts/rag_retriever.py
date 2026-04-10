@@ -99,13 +99,23 @@ class EmbeddingFunction:
         return embeddings.tolist()
 
     def _embed_online(self, texts: list[str]) -> list[list[float]]:
-        """使用线上 API 生成向量"""
+        """使用线上 API 生成向量，并显式 L2 归一化（FIX-07）"""
         client = self._get_online_client()
         response = client.embeddings.create(
             input=texts,
             model=self.online_model,
         )
-        return [item.embedding for item in response.data]
+        raw = [item.embedding for item in response.data]
+        # 显式 L2 归一化，确保与本地 normalize_embeddings=True 一致
+        # 参考 FIX-07：在线 embedding 未归一化时余弦相似度公式失效
+        normalized = []
+        for vec in raw:
+            norm = sum(x * x for x in vec) ** 0.5
+            if norm > 0:
+                normalized.append([x / norm for x in vec])
+            else:
+                normalized.append(vec)
+        return normalized
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         """ChromaDB 兼容的调用接口"""
@@ -273,22 +283,13 @@ class RAGRetriever:
         for md_file in md_files:
             rel_path = str(md_file.relative_to(self.wiki_dir))
             new_hash = self._compute_md5(md_file)
-            new_hashes[rel_path] = new_hash
 
             # 跳过未变更的文件
             if not force and old_hashes.get(rel_path) == new_hash:
+                # 文件未变更：new_hash 与旧 hash 相同，写入 new_hashes 供最终保存
+                new_hashes[rel_path] = new_hash
                 skipped_count += 1
                 continue
-
-            # 删除旧向量
-            try:
-                existing = self._wiki_collection.get(
-                    where={"source": rel_path}
-                )
-                if existing and existing["ids"]:
-                    self._wiki_collection.delete(ids=existing["ids"])
-            except Exception as e:
-                logger.debug(f"删除旧向量时出错（可能不存在）: {e}")
 
             # 分块并 embedding
             content = md_file.read_text(encoding="utf-8")
@@ -296,7 +297,27 @@ class RAGRetriever:
 
             if chunks:
                 texts = [c["text"] for c in chunks]
-                embeddings = self.embedding_fn.embed(texts)
+
+                # FIX-23/REV-5：先 embedding，成功后再更新 new_hashes 和删旧向量。
+                # embedding 失败时不更新 new_hashes，保证下次运行可以重试。
+                try:
+                    embeddings = self.embedding_fn.embed(texts)
+                except Exception as e:
+                    logger.warning(f"embedding 失败，跳过 {rel_path}: {e}")
+                    # 失败时保留旧哈希（如有），确保下次还能重试
+                    if rel_path in old_hashes:
+                        new_hashes[rel_path] = old_hashes[rel_path]
+                    continue
+
+                # embedding 成功后删除旧向量
+                try:
+                    existing = self._wiki_collection.get(
+                        where={"source": rel_path}
+                    )
+                    if existing and existing["ids"]:
+                        self._wiki_collection.delete(ids=existing["ids"])
+                except Exception as e:
+                    logger.debug(f"删除旧向量时出错（可能不存在）: {e}")
 
                 ids = [f"{rel_path}#{i}" for i in range(len(chunks))]
                 metadatas = [
@@ -310,6 +331,8 @@ class RAGRetriever:
                     documents=texts,
                     metadatas=metadatas,
                 )
+                # embedding 和写入均成功，才记录新哈希（REV-5）
+                new_hashes[rel_path] = new_hash
                 updated_count += 1
 
         # 删除已移除的文件对应的向量

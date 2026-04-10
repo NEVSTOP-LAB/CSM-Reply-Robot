@@ -86,8 +86,10 @@ def approve_pending(filepath: Path, zhihu_client=None) -> bool:
                 logger.warning("发布失败: %s", filepath.name)
                 return False
 
-        # 移动到已完成目录
-        done_dir = filepath.parent.parent / "archive" / "done"
+        # 移动到已完成目录（FIX-19：改为 data/done/，与线程归档目录分离）
+        # 从 pending 文件所在路径推算 data/ 根目录：
+        # pending 文件在 data/pending/ 目录下
+        done_dir = filepath.parent.parent / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         filepath.rename(done_dir / filepath.name)
 

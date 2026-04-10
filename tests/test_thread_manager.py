@@ -371,3 +371,32 @@ class TestBuildContextMessages:
         messages = manager.build_context_messages(path)
         for msg in messages:
             assert msg["content"].strip() != ""
+
+
+# ===== _parse_turns 引用符剥离测试（FIX-13）=====
+
+class TestParseTurnsQuoteStripping:
+    """验证 _parse_turns 只剥第一层引用前缀（FIX-13）"""
+
+    def test_single_level_quote_stripped(self, manager, sample_comment, sample_article_meta):
+        """单层 > 引用前缀应被剥去"""
+        path = manager.get_or_create_thread("111", sample_comment, sample_article_meta)
+        # append_turn 内部存储时会加引用格式，_parse_turns 解析时应剥去
+        manager.append_turn(path, "user", "普通内容")
+        messages = manager.build_context_messages(path)
+        assert messages
+        assert not messages[-1]["content"].startswith(">"), \
+            "单层 > 应被剥去"
+
+    def test_nested_quote_preserved(self, manager, sample_comment, sample_article_meta):
+        """内容中合法的嵌套 Markdown 引用不应被完全剥去（FIX-13）"""
+        path = manager.get_or_create_thread("222", sample_comment, sample_article_meta)
+        # 评论内容包含嵌套引用 >> 
+        manager.append_turn(path, "user", "正如作者所说：\n>> 这是引用内容")
+        messages = manager.build_context_messages(path)
+        assert messages
+        # 第二层引用 ">" 应保留（只剥了外层一个 "> "，嵌套的 ">" 还在）
+        # 原始："> 正如作者所说：\n>> 这是引用内容"
+        # 剥去第一层后："正如作者所说：\n> 这是引用内容"
+        assert ">" in messages[-1]["content"], \
+            "嵌套引用的 > 应保留（只剥第一层）"

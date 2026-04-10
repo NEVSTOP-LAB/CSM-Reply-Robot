@@ -125,6 +125,15 @@ class TestBotWorkflow:
         assert "skip ci" in commit_step[0].lower(), \
             "commit message 应包含 [skip ci]"
 
+    def test_has_concurrency_setting(self, workflow: dict):
+        """应有 concurrency 设置防止并发写 seen_ids（FIX-22）"""
+        concurrency = workflow.get("concurrency", {})
+        assert concurrency, "缺少 concurrency 设置（FIX-22）"
+        assert "group" in concurrency, "concurrency 应包含 group"
+        assert concurrency.get("cancel-in-progress") is False, (
+            "cancel-in-progress 应为 false，避免正在运行的 bot 被取消"
+        )
+
 
 class TestSyncWikiWorkflow:
     """sync-wiki.yml Workflow 测试"""
@@ -153,3 +162,49 @@ class TestSyncWikiWorkflow:
         dispatch = triggers.get("workflow_dispatch", {})
         inputs = dispatch.get("inputs", {})
         assert "force_rebuild" in inputs, "缺少 force_rebuild 输入参数"
+
+
+class TestCacheKeyStrategy:
+    """验证 vector store cache key 使用文件哈希而非 run_number（FIX-08）"""
+
+    def _get_vector_cache_key(self, workflow: dict) -> str:
+        """从 workflow 中提取 vector stores 的 cache key"""
+        steps = workflow["jobs"]
+        for job in steps.values():
+            for step in job.get("steps", []):
+                with_cfg = step.get("with", {})
+                path = with_cfg.get("path", "")
+                if "vector_store" in str(path):
+                    return with_cfg.get("key", "")
+        return ""
+
+    def test_bot_vector_cache_key_not_run_number(self):
+        """bot.yml vector stores cache key 不应使用 run_number（FIX-08）"""
+        path = WORKFLOW_DIR / "bot.yml"
+        with open(path, "r", encoding="utf-8") as f:
+            workflow = yaml.safe_load(f)
+        key = self._get_vector_cache_key(workflow)
+        assert key, "未找到 vector_store cache step"
+        assert "run_number" not in key, (
+            f"cache key 不应使用 run_number，当前: {key}"
+        )
+
+    def test_bot_vector_cache_key_uses_hash(self):
+        """bot.yml vector stores cache key 应基于文件哈希（FIX-08）"""
+        path = WORKFLOW_DIR / "bot.yml"
+        with open(path, "r", encoding="utf-8") as f:
+            workflow = yaml.safe_load(f)
+        key = self._get_vector_cache_key(workflow)
+        assert "hashFiles" in key, (
+            f"cache key 应使用 hashFiles()，当前: {key}"
+        )
+
+    def test_sync_wiki_vector_cache_key_uses_hash(self):
+        """sync-wiki.yml vector stores cache key 应基于文件哈希（FIX-08）"""
+        path = WORKFLOW_DIR / "sync-wiki.yml"
+        with open(path, "r", encoding="utf-8") as f:
+            workflow = yaml.safe_load(f)
+        key = self._get_vector_cache_key(workflow)
+        assert "hashFiles" in key, (
+            f"cache key 应使用 hashFiles()，当前: {key}"
+        )

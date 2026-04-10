@@ -37,19 +37,21 @@ def manager(health_file: Path) -> AlertManager:
 
 
 def _mock_get_no_issues(url, **kwargs):
-    """模拟 GitHub API 返回空 issue 列表"""
+    """模拟 GitHub API 返回空 issue 列表（无分页）"""
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = []
+    resp.headers = {}
     return resp
 
 
 def _mock_get_with_issue(title):
-    """模拟 GitHub API 返回包含指定 title 的 issue"""
+    """模拟 GitHub API 返回包含指定 title 的 issue（无分页）"""
     def mock_get(url, **kwargs):
         resp = MagicMock()
         resp.status_code = 200
         resp.json.return_value = [{"title": title}]
+        resp.headers = {}
         return resp
     return mock_get
 
@@ -226,3 +228,60 @@ class TestHealthRecord:
 
         data = json.loads(health_file.read_text())
         assert data["status"] == "error"
+
+
+# ===== 分页查重测试 =====
+
+class TestPaginatedIssueCheck:
+    """验证 _has_open_issue 跨分页查重（REV-3）"""
+
+    def test_finds_issue_on_second_page(self, manager):
+        """目标 issue 在第二页时应正确检测到"""
+        target_title = "第二页的告警"
+        call_count = [0]
+
+        def paginated_get(url, params=None, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # 第一页：100 条不同 issue，并附 Link: next
+                resp.json.return_value = [{"title": f"issue-{i}"} for i in range(100)]
+                resp.headers = {
+                    "Link": f'<{manager.GITHUB_API_BASE}/repos/test-owner/test-repo/issues?page=2>; rel="next"'
+                }
+            else:
+                # 第二页：包含目标 issue，无下一页
+                resp.json.return_value = [{"title": target_title}]
+                resp.headers = {}
+            return resp
+
+        with patch.object(manager._session, "get", side_effect=paginated_get):
+            result = manager._has_open_issue(target_title)
+
+        assert result is True
+        assert call_count[0] == 2
+
+    def test_returns_false_when_not_on_any_page(self, manager):
+        """所有页均无目标 issue 时应返回 False"""
+        call_count = [0]
+
+        def paginated_get(url, params=None, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            call_count[0] += 1
+            if call_count[0] == 1:
+                resp.json.return_value = [{"title": "其他告警"}]
+                resp.headers = {
+                    "Link": f'<{manager.GITHUB_API_BASE}/repos/test-owner/test-repo/issues?page=2>; rel="next"'
+                }
+            else:
+                resp.json.return_value = []
+                resp.headers = {}
+            return resp
+
+        with patch.object(manager._session, "get", side_effect=paginated_get):
+            result = manager._has_open_issue("不存在的告警")
+
+        assert result is False
+        assert call_count[0] == 2

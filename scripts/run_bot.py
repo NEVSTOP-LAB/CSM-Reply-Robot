@@ -137,8 +137,11 @@ class BotRunner:
             archive_dir=str(self.root / "archive")
         )
 
-        # 评论过滤器
-        self.comment_filter = CommentFilter(settings=self.settings)
+        # 评论过滤器（data_dir 用于持久化 dedup 缓存，FIX-04）
+        self.comment_filter = CommentFilter(
+            settings=self.settings,
+            data_dir=str(self.root / "data"),
+        )
 
         # 告警管理器
         self.alert_manager = AlertManager(
@@ -228,7 +231,7 @@ class BotRunner:
             comment_id: 评论 ID
             risk_reason: AI 风险评估理由
         """
-        pending_dir = self.root / "pending"
+        pending_dir = self.root / "data" / "pending"
         pending_dir.mkdir(parents=True, exist_ok=True)
 
         filename = f"{article['id']}_{comment_id}.md"
@@ -302,29 +305,35 @@ class BotRunner:
         article_summary = ""
         if self.llm_client:
             try:
-                article_summary = self.llm_client.summarize_article(
-                    title=article.get("title", ""),
-                    content=article.get("title", ""),
-                )
+                # 无正文时直接用标题（FIX-05），不浪费 API 调用
+                article_content = article.get("content", "")
+                article_title = article.get("title", "")
+                if not article_content:
+                    article_summary = article_title
+                else:
+                    article_summary = self.llm_client.summarize_article(
+                        title=article_title,
+                        content=article_content,
+                    )
             except Exception as e:
                 logger.warning(f"文章摘要生成失败: {e}")
 
         # 将摘要写入 article_meta，供线程管理器使用
         article_meta["summary"] = article_summary
 
-        # 检索文章相关 Wiki 上下文（批量复用）
-        context_chunks = []
-        if self.rag_retriever:
-            context_chunks = self.rag_retriever.retrieve(
-                query=article.get("title", ""),
-                k=self.settings.get("rag", {}).get("top_k", 3),
-                threshold=self.settings.get("rag", {}).get(
-                    "similarity_threshold", 0.72
-                ),
-            )
+        # 本次 run 处理计数（FIX-16：实现 max_new_comments_per_run 上限）
+        max_per_run = self.settings.get("bot", {}).get("max_new_comments_per_run", 0)
+        run_processed = 0
 
         for comment in new_comments:
             if not self._check_daily_limit():
+                break
+
+            # 单次运行上限检查（FIX-16）
+            if max_per_run > 0 and run_processed >= max_per_run:
+                logger.info(
+                    "已达单次运行上限 %d 条，停止处理（FIX-16）", max_per_run
+                )
                 break
 
             try:
@@ -332,10 +341,10 @@ class BotRunner:
                     article=article,
                     article_meta=article_meta,
                     comment=comment,
-                    context_chunks=context_chunks,
                     article_summary=article_summary,
                 )
                 self._consecutive_failures = 0
+                run_processed += 1  # FIX-16
             except BudgetExceededError as e:
                 logger.warning(f"预算超限: {e}")
                 raise  # 向上传播，由 run_articles 处理告警
@@ -359,7 +368,6 @@ class BotRunner:
         article: dict,
         article_meta: dict,
         comment,
-        context_chunks: list[str],
         article_summary: str,
     ):
         """处理单条评论
@@ -368,7 +376,6 @@ class BotRunner:
             article: 文章配置
             article_meta: 文章元信息
             comment: Comment 对象
-            context_chunks: RAG 检索结果
             article_summary: 文章摘要
         """
         # 检测真人回复 → 索引
@@ -404,8 +411,21 @@ class BotRunner:
                 self.comment_filter.truncate_if_needed(comment_dict["content"])
             )
 
+        # 按评论内容检索 Wiki 上下文（FIX-02：每条评论独立检索，不复用文章标题）
+        # 参考: docs/plan/README.md § 流程图 "RAG 检索"节点在单条评论路径上
+        context_chunks: list[str] = []
+        if self.rag_retriever:
+            context_chunks = self.rag_retriever.retrieve(
+                query=comment_dict["content"],
+                k=self.settings.get("rag", {}).get("top_k", 3),
+                threshold=self.settings.get("rag", {}).get(
+                    "similarity_threshold", 0.72
+                ),
+            )
+
         # 构建线程和历史上下文
         history_messages = []
+        thread_path = None  # FIX-15：初始化为 None，后续复用
         if self.thread_manager:
             root_comment = {
                 "id": comment.parent_id or comment.id,
@@ -424,6 +444,7 @@ class BotRunner:
                 thread_path=thread_path,
                 author=comment.author,
                 content=comment.content,
+                is_followup=comment.parent_id is not None,
             )
 
             # 获取历史上下文
@@ -464,16 +485,8 @@ class BotRunner:
                     usd_cost=self.llm_client.total_cost_usd - prev_cost,
                 )
 
-        # 追加 Bot 回复到线程
-        if self.thread_manager and reply_content:
-            thread_path = self.thread_manager.get_or_create_thread(
-                article_id=article["id"],
-                root_comment={
-                    "id": comment.parent_id or comment.id,
-                    "author": comment.author,
-                },
-                article_meta=article_meta,
-            )
+        # 追加 Bot 回复到线程（FIX-15：直接复用已有 thread_path，不再重复调用 get_or_create_thread）
+        if self.thread_manager and reply_content and thread_path:
             self.thread_manager.append_turn(
                 thread_path=thread_path,
                 author="Bot",
@@ -481,18 +494,6 @@ class BotRunner:
                 model=self.llm_client.model if self.llm_client else "unknown",
                 tokens=total_tokens,
             )
-
-        # 将 QA 对（用户评论 + bot 回复）索引到 RAG，用于后续检索学习
-        if self.rag_retriever and reply_content:
-            try:
-                self.rag_retriever.index_human_reply(
-                    question=comment_dict["content"],
-                    reply=reply_content,
-                    article_id=article["id"],
-                    thread_id=comment.parent_id or comment.id if hasattr(comment, 'parent_id') else comment.id,
-                )
-            except Exception as e:
-                logger.warning("Bot 回复索引到 RAG 失败: %s", e)
 
         # AI 风险评估：决定自动发布或写入 pending/
         if self.llm_client and reply_content and self.zhihu_client:
@@ -514,7 +515,20 @@ class BotRunner:
                     content=reply_content,
                     parent_id=comment.id,
                 )
-                if not success:
+                if success:
+                    # 发布成功后才将 QA 对索引到 RAG（FIX-06）
+                    # 避免未发布/被拒回复污染检索结果
+                    if self.rag_retriever:
+                        try:
+                            self.rag_retriever.index_human_reply(
+                                question=comment_dict["content"],
+                                reply=reply_content,
+                                article_id=article["id"],
+                                thread_id=comment.parent_id or comment.id,
+                            )
+                        except Exception as e:
+                            logger.warning("Bot 回复索引到 RAG 失败: %s", e)
+                else:
                     # 发布失败，回退到 pending/
                     self._write_pending(
                         article=article,
@@ -578,14 +592,18 @@ class BotRunner:
 
         # 索引到 reply_index
         if self.rag_retriever:
-            # 获取上一条用户评论作为 question
-            question = "用户评论"  # 简化处理
+            # 从历史消息中找最近一条 role=="user" 的内容作为 question（FIX-12）
+            # 参考: docs/plan/2026-04-10-code-review-fixes.md § FIX-12
+            question = "用户评论"  # 默认值
             if self.thread_manager:
                 messages = self.thread_manager.build_context_messages(
-                    thread_path, max_turns=2
+                    thread_path, max_turns=6
                 )
-                if messages:
-                    question = messages[0].get("content", question)
+                # 从最新向最旧遍历，取第一条 user 消息
+                for msg in reversed(messages):
+                    if msg.get("role") == "user":
+                        question = msg.get("content", question)
+                        break
 
             self.rag_retriever.index_human_reply(
                 question=question,
@@ -637,10 +655,13 @@ class BotRunner:
             )
 
     def _expand_articles(self) -> list[dict]:
-        """展开 column/user_answers 类型为具体的文章/回答列表
+        """展开 column/user_answers/question 类型为具体的文章/回答列表
 
-        将 articles 配置中的 column 和 user_answers 类型自动展开
-        为对应的 article/question 类型条目。
+        将 articles 配置中的 column、user_answers 和 question 类型自动展开
+        为对应的 article/answer 类型条目。
+
+        - question 类型：通过 API 获取该问题下所有回答的 answer_id，
+          后续用正确的 answer_id 读写评论（FIX-01）
 
         Returns:
             展开后的文章列表
@@ -649,8 +670,26 @@ class BotRunner:
         for article in self.articles:
             article_type = article.get("type", "article")
 
-            if article_type in ("article", "question"):
+            if article_type in ("article", "answer"):
                 expanded.append(article)
+            elif article_type == "question" and self.zhihu_client:
+                # 展开问题：获取问题下所有回答的 answer_id
+                # 参考 FIX-01: question_id ≠ answer_id，需先解析
+                try:
+                    answers = self.zhihu_client.get_question_answers(
+                        article["id"]
+                    )
+                    # 继承文章配置中的 title/url（若 API 未返回）
+                    for ans in answers:
+                        ans.setdefault("title", article.get("title", ""))
+                        ans.setdefault("url", article.get("url", ""))
+                    expanded.extend(answers)
+                    logger.info(
+                        "问题 %s 展开为 %d 个回答",
+                        article["id"], len(answers),
+                    )
+                except Exception as e:
+                    logger.warning("展开问题 %s 失败: %s", article["id"], e)
             elif article_type == "column" and self.zhihu_client:
                 # 展开专栏：获取专栏下全部文章
                 try:
@@ -701,7 +740,7 @@ class BotRunner:
             except ZhihuAuthError as e:
                 logger.error(f"知乎认证失败: {e}")
                 if self.alert_manager:
-                    self.alert_manager.alert_cookie_expired(401)
+                    self.alert_manager.alert_cookie_expired(e.status_code)
                 break
             except ZhihuRateLimitError as e:
                 logger.error(f"知乎限流: {e}")
@@ -751,6 +790,9 @@ class BotRunner:
 
             # 保存状态
             self.save_seen_ids()
+            # 持久化 dedup 缓存（FIX-04）
+            if self.comment_filter:
+                self.comment_filter.save_dedup_cache()
 
             # 费用报告
             if self.cost_tracker:

@@ -17,6 +17,7 @@ AI-006: LLMClient — DeepSeek/OpenAI 回复生成
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import time
@@ -232,8 +233,8 @@ class LLMClient:
         Returns:
             文章摘要文本
         """
-        # 检查缓存
-        cache_key = f"{title}_{hash(content)}"
+        # 检查缓存（FIX-21：用 hashlib.md5 替代 hash()，跨进程一致）
+        cache_key = f"{title}_{hashlib.md5(content.encode()).hexdigest()}"
         if cache_key in self._article_summary_cache:
             logger.debug("文章摘要命中缓存: %s", title)
             return self._article_summary_cache[cache_key]
@@ -277,7 +278,16 @@ class LLMClient:
             (risk_level, reason):
             - risk_level: "safe"（可自动发布）或 "risky"（需人工审核）
             - reason: 判断理由
+
+        Raises:
+            BudgetExceededError: 超过每日预算
         """
+        # FIX-20：预算检查，与 generate_reply 保持一致
+        if self._daily_cost_usd >= self.budget_usd_per_day:
+            raise BudgetExceededError(
+                f"每日 LLM 费用已达 ${self._daily_cost_usd:.4f}，"
+                f"超过预算 ${self.budget_usd_per_day:.2f}"
+            )
         messages = [
             {
                 "role": "system",
@@ -409,11 +419,6 @@ class LLMClient:
             + usage.completion_tokens * pricing["output"]
         )
         return cost
-
-    @property
-    def daily_cost(self) -> float:
-        """当日累计费用（USD）"""
-        return self._daily_cost_usd
 
     @property
     def total_cost_usd(self) -> float:
