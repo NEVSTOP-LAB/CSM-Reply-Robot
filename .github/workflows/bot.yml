@@ -65,13 +65,14 @@ jobs:
 
       # 5. 缓存向量数据库（ChromaDB + reply_index）
       # 参考 AI-011：向量库外部化方案
+      # 使用 Wiki 文件哈希作为 cache key（FIX-08），内容不变时复用缓存
       - name: Cache vector stores
         uses: actions/cache@v4
         with:
           path: |
             data/vector_store
             data/reply_index
-          key: vectors-${{ runner.os }}-${{ github.run_number }}
+          key: vectors-${{ runner.os }}-${{ hashFiles('csm-wiki/**') }}
           restore-keys: |
             vectors-${{ runner.os }}-
 
