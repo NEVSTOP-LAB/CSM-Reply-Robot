@@ -64,13 +64,14 @@ class AlertManager:
                 "Accept": "application/vnd.github.v3+json",
             })
 
-    def _has_open_issue(self, title: str) -> bool:
+    def _has_open_issue(self, title: str, labels: list[str] | None = None) -> bool:
         """检查是否已有同 title 的 open issue
 
         实施计划关联：AI-010 任务 3（防重复）
 
         Args:
             title: Issue 标题
+            labels: 仅搜索含这些标签的 Issue（FIX-18：缩小搜索范围）
 
         Returns:
             True 如果已有同名 open issue
@@ -79,7 +80,10 @@ class AlertManager:
             return False
 
         url = f"{self.GITHUB_API_BASE}/repos/{self.repo}/issues"
-        params = {"state": "open", "per_page": 50}
+        params: dict = {"state": "open", "per_page": 50}
+        # FIX-18：按标签过滤，缩小搜索范围，避免 > 50 条 issue 时漏查
+        if labels:
+            params["labels"] = ",".join(labels)
 
         try:
             resp = self._session.get(url, params=params, timeout=10)
@@ -117,8 +121,8 @@ class AlertManager:
             logger.warning("未配置 GITHUB_TOKEN 或 GITHUB_REPOSITORY，跳过告警")
             return False
 
-        # 幂等检查
-        if self._has_open_issue(title):
+        # 幂等检查（FIX-18：传入 labels 缩小搜索范围）
+        if self._has_open_issue(title, labels=labels or ["bot-alert"]):
             logger.info(f"已有同名 open issue，跳过: {title}")
             return True
 
