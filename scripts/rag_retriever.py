@@ -99,13 +99,23 @@ class EmbeddingFunction:
         return embeddings.tolist()
 
     def _embed_online(self, texts: list[str]) -> list[list[float]]:
-        """使用线上 API 生成向量"""
+        """使用线上 API 生成向量，并显式 L2 归一化（FIX-07）"""
         client = self._get_online_client()
         response = client.embeddings.create(
             input=texts,
             model=self.online_model,
         )
-        return [item.embedding for item in response.data]
+        raw = [item.embedding for item in response.data]
+        # 显式 L2 归一化，确保与本地 normalize_embeddings=True 一致
+        # 参考 FIX-07：在线 embedding 未归一化时余弦相似度公式失效
+        normalized = []
+        for vec in raw:
+            norm = sum(x * x for x in vec) ** 0.5
+            if norm > 0:
+                normalized.append([x / norm for x in vec])
+            else:
+                normalized.append(vec)
+        return normalized
 
     def __call__(self, input: list[str]) -> list[list[float]]:
         """ChromaDB 兼容的调用接口"""

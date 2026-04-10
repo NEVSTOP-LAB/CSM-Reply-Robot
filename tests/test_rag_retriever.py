@@ -354,3 +354,43 @@ class TestEmbeddingFunction:
         ef = EmbeddingFunction(use_online=False)
         ef.embed(["test"])
         mock_local.assert_called_once_with(["test"])
+
+    def test_online_embedding_l2_normalized(self):
+        """线上 embedding 应被 L2 归一化（FIX-07）"""
+        ef = EmbeddingFunction(use_online=True)
+
+        # 模拟未归一化的线上 embedding 返回
+        raw_vec = [3.0, 4.0]  # norm = 5.0
+        mock_response = MagicMock()
+        mock_item = MagicMock()
+        mock_item.embedding = raw_vec
+        mock_response.data = [mock_item]
+
+        with patch.object(ef, "_get_online_client") as mock_client:
+            mock_client.return_value.embeddings.create.return_value = mock_response
+            result = ef.embed(["test text"])
+
+        assert len(result) == 1
+        vec = result[0]
+        # 验证向量已被 L2 归一化：|v| ≈ 1.0
+        norm = sum(x * x for x in vec) ** 0.5
+        assert abs(norm - 1.0) < 1e-6, f"期望 L2 归一化向量，|v|={norm}"
+        # 验证归一化正确：[3/5, 4/5]
+        assert abs(vec[0] - 0.6) < 1e-6
+        assert abs(vec[1] - 0.8) < 1e-6
+
+    def test_online_embedding_zero_vector_handled(self):
+        """零向量不应导致除零错误（FIX-07）"""
+        ef = EmbeddingFunction(use_online=True)
+
+        mock_response = MagicMock()
+        mock_item = MagicMock()
+        mock_item.embedding = [0.0, 0.0, 0.0]
+        mock_response.data = [mock_item]
+
+        with patch.object(ef, "_get_online_client") as mock_client:
+            mock_client.return_value.embeddings.create.return_value = mock_response
+            result = ef.embed(["test"])
+
+        # 零向量应原样返回，不抛异常
+        assert result[0] == [0.0, 0.0, 0.0]
