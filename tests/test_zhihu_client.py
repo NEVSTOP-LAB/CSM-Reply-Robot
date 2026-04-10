@@ -359,14 +359,13 @@ class TestPostComment:
         assert json_data["parent_id"] == "777"
 
     @patch("scripts.zhihu_client.time.sleep")
-    def test_post_auth_failure_returns_false(self, mock_sleep, client):
-        """发布时遇到 401 应返回 False（不抛异常）"""
+    def test_post_auth_failure_raises(self, mock_sleep, client):
+        """发布时遇到 401 应重新抛出 ZhihuAuthError（FIX-09）"""
         resp = _make_response(401)
 
         with patch.object(client.session, "request", return_value=resp):
-            result = client.post_comment("99", "article", "内容")
-
-        assert result is False
+            with pytest.raises(ZhihuAuthError):
+                client.post_comment("99", "article", "内容")
 
     def test_post_without_xsrf_returns_false(self):
         """没有 _xsrf 时应返回 False"""

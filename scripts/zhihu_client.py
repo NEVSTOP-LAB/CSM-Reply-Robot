@@ -393,10 +393,10 @@ class ZhihuClient:
                 )
                 return False
         except ZhihuAuthError:
-            # 认证失败时不抛出，返回 False，让主流程写入 pending/
-            # 参考: docs/plan/README.md § AI-003 第 3 点
-            logger.error("评论发布失败: Cookie 失效或权限不足")
-            return False
+            # 认证失败（Cookie 失效/权限不足）→ 重新抛出（FIX-09）
+            # 让主流程捕获并触发 Cookie 失效告警，而非悄悄写入 pending/
+            logger.error("评论发布失败: Cookie 失效或权限不足，重新抛出 ZhihuAuthError")
+            raise
         except Exception as e:
             logger.error("评论发布异常: %s", e)
             return False
