@@ -26,8 +26,8 @@ rag:
   history_turns: 6                                # 追问时保留最近 N 轮
 
 wiki:
-  remote_repo: "https://github.com/NEVSTOP-LAB/CSM-Wiki.git"   # 远端主知识库（sync-wiki.yml 自动拉取）
-  local_dir: "csm-wiki"                                          # 本地补充文档目录（可选）
+  remote_repo: "https://github.com/NEVSTOP-LAB/CSM-Wiki.git"   # 远端主知识库（sync-wiki.yml 自动拉取到 csm-wiki/remote/）
+  base_dir: "csm-wiki"                                           # 知识库根目录（包含远端子目录 remote/ 和本地补充文档）
 
 vector_store:
   backend: "actions_cache"    # "git"（旧）| "actions_cache"（推荐，参考 AI-011）

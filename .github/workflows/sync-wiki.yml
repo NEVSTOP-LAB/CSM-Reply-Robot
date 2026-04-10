@@ -56,9 +56,9 @@ jobs:
         run: |
           # 拉取远端主知识库 NEVSTOP-LAB/CSM-Wiki
           git clone --depth=1 https://github.com/NEVSTOP-LAB/CSM-Wiki.git /tmp/csm-wiki-remote
-          # 将远端文档合并到 csm-wiki/ 目录（不覆盖同名本地文件）
+          # 将远端文档合并到 csm-wiki/remote/（--update 确保远端更新能覆盖旧版本）
           mkdir -p csm-wiki/remote
-          rsync -av --ignore-existing /tmp/csm-wiki-remote/ csm-wiki/remote/ \
+          rsync -av --update /tmp/csm-wiki-remote/ csm-wiki/remote/ \
             --exclude '.git' \
             --exclude 'node_modules'
           echo "远端 CSM-Wiki 文档已合并到 csm-wiki/remote/"

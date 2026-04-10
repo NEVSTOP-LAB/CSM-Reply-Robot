@@ -51,10 +51,10 @@ def main():
     rag_cfg = settings.get("rag", {})
     wiki_cfg = settings.get("wiki", {})
 
-    # wiki 目录：优先读取配置，默认为 csm-wiki/
-    # 远端内容由 sync-wiki.yml 拉取到 csm-wiki/remote/，与本地文件共同被扫描
-    local_dir = wiki_cfg.get("local_dir", "csm-wiki")
-    wiki_dir = str(project_root / local_dir)
+    # wiki 根目录：包含远端子目录 csm-wiki/remote/（由 sync-wiki.yml 拉取）和本地补充文档
+    # 优先读取配置，默认为 csm-wiki/
+    wiki_base_dir = wiki_cfg.get("base_dir", "csm-wiki")
+    wiki_dir = str(project_root / wiki_base_dir)
 
     # 初始化 RAGRetriever
     retriever = RAGRetriever(
