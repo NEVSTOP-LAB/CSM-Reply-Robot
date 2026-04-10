@@ -411,11 +411,6 @@ class LLMClient:
         return cost
 
     @property
-    def daily_cost(self) -> float:
-        """当日累计费用（USD）"""
-        return self._daily_cost_usd
-
-    @property
     def total_cost_usd(self) -> float:
         """当日累计费用（USD）"""
         return self._daily_cost_usd
