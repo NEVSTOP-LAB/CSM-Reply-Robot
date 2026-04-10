@@ -9,20 +9,22 @@
 功能：
 - 超长评论截断（不跳过，截断后继续处理）
 - 广告/敏感词过滤（跳过）
-- 重复评论检测（同一用户在时间窗口内重复，跳过）
+- 重复评论检测（同一用户在时间窗口内重复，跳过），状态持久化到 data/dedup_cache.json
 - 自动跳过感谢类评论
 
 使用方式：
-    filter = CommentFilter(settings)
+    filter = CommentFilter(settings, data_dir="data")
     should_skip, reason = filter.should_skip(comment)
     if should_skip:
         log(f"跳过评论: {reason}")
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Optional
 
 import tiktoken
@@ -38,14 +40,17 @@ class CommentFilter:
     在主流程处理评论前进行过滤，支持：
     - 超长截断（>max_comment_tokens 时截断，不跳过）
     - 广告关键词（命中 spam_keywords 时跳过）
-    - 重复评论（同一 author 在 dedup_window_minutes 内跳过）
+    - 重复评论（同一 author 在 dedup_window_minutes 内跳过，状态跨 run 持久化）
     - 感谢类评论（命中 auto_skip_patterns 时跳过）
 
     Args:
         settings: 配置字典（来自 config/settings.yaml）
+        data_dir: 数据目录路径，用于持久化 dedup_cache.json（FIX-04）
     """
 
-    def __init__(self, settings: dict):
+    DEDUP_CACHE_FILE = "dedup_cache.json"
+
+    def __init__(self, settings: dict, data_dir: Optional[str] = None):
         filter_cfg = settings.get("filter", {})
         review_cfg = settings.get("review", {})
 
@@ -56,15 +61,175 @@ class CommentFilter:
             re.compile(p) for p in review_cfg.get("auto_skip_patterns", [])
         ]
 
+        # 持久化路径（FIX-04）
+        self._data_dir: Optional[Path] = Path(data_dir) if data_dir else None
+        self._dedup_cache_path: Optional[Path] = (
+            self._data_dir / self.DEDUP_CACHE_FILE if self._data_dir else None
+        )
+
         # 最近评论记录：{author: last_timestamp}
-        # 用于重复评论检测
+        # 用于重复评论检测，从持久化文件加载
         self._recent_comments: dict[str, float] = {}
+        self._load_dedup_cache()
 
         # Token 编码器（用于超长评论检测）
         try:
             self._encoder = tiktoken.get_encoding("cl100k_base")
         except Exception:
             self._encoder = None
+
+    def _load_dedup_cache(self) -> None:
+        """从持久化文件加载 dedup 缓存（FIX-04）
+
+        启动时读取上次运行的 _recent_comments，跨 run 保持去重窗口有效。
+        """
+        if not self._dedup_cache_path or not self._dedup_cache_path.exists():
+            return
+
+        try:
+            with open(self._dedup_cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._recent_comments = {
+                    k: float(v) for k, v in data.items()
+                    if isinstance(k, str) and isinstance(v, (int, float))
+                }
+                logger.debug(
+                    "已加载 dedup 缓存: %d 条记录", len(self._recent_comments)
+                )
+        except Exception as e:
+            logger.warning("加载 dedup 缓存失败，重置为空: %s", e)
+            self._recent_comments = {}
+
+    def save_dedup_cache(self) -> None:
+        """持久化 dedup 缓存到文件（FIX-04）
+
+        主流程在每次 run 结束前调用，保存 _recent_comments 供下次使用。
+        过期条目（超过 dedup_window_minutes）会被清理。
+        """
+        if not self._dedup_cache_path:
+            return
+
+        # 清理过期条目
+        now = time.time()
+        cutoff = now - self.dedup_window_minutes * 60
+        fresh = {
+            author: ts
+            for author, ts in self._recent_comments.items()
+            if ts >= cutoff
+        }
+
+        try:
+            self._dedup_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._dedup_cache_path, "w", encoding="utf-8") as f:
+                json.dump(fresh, f)
+            logger.debug("已保存 dedup 缓存: %d 条记录", len(fresh))
+            # 同步内存（移除已清理的过期条目）
+            self._recent_comments = fresh
+        except Exception as e:
+            logger.warning("保存 dedup 缓存失败: %s", e)
+
+    def _count_tokens(self, text: str) -> int:
+        """计算文本 token 数
+
+        使用 tiktoken cl100k_base 编码器。
+        如果编码器不可用，使用粗略的字符数估算。
+        """
+        if self._encoder:
+            return len(self._encoder.encode(text))
+        # 粗略估算：中文约 1 字 ≈ 1.5 tokens
+        return int(len(text) * 1.5)
+
+    def truncate_if_needed(self, content: str) -> str:
+        """如果评论超长则截断
+
+        实施计划关联：AI-008 任务 2（超长截断阈值）
+
+        超过 max_comment_tokens 的评论会被截断，
+        但不会被跳过（截断后继续处理）。
+
+        Args:
+            content: 评论内容
+
+        Returns:
+            原内容或截断后的内容
+        """
+        token_count = self._count_tokens(content)
+        if token_count <= self.max_comment_tokens:
+            return content
+
+        # 按 token 截断
+        if self._encoder:
+            tokens = self._encoder.encode(content)
+            truncated_tokens = tokens[:self.max_comment_tokens]
+            truncated = self._encoder.decode(truncated_tokens)
+        else:
+            # 粗略截断
+            max_chars = int(self.max_comment_tokens / 1.5)
+            truncated = content[:max_chars]
+
+        logger.info(
+            f"评论超长截断: {token_count} → {self.max_comment_tokens} tokens"
+        )
+        return truncated + "..."
+
+    def should_skip(
+        self, comment: dict, current_time: float | None = None
+    ) -> tuple[bool, str]:
+        """判断是否应跳过该评论
+
+        实施计划关联：AI-008 任务 1
+
+        按以下顺序检查过滤规则：
+        1. 广告/敏感词 → 跳过
+        2. 感谢类评论 → 跳过
+        3. 重复评论 → 跳过
+        4. 超长 → 不跳过（截断由 truncate_if_needed 处理）
+
+        Args:
+            comment: 评论字典 {content, author, created_time}
+            current_time: 当前时间戳（测试用，默认 time.time()）
+
+        Returns:
+            (是否跳过, 原因说明)
+        """
+        content = comment.get("content", "")
+        author = comment.get("author", "")
+        timestamp = (
+            current_time
+            if current_time is not None
+            else comment.get("created_time", time.time())
+        )
+
+        # 1. 广告/敏感词检查
+        for keyword in self.spam_keywords:
+            if keyword in content:
+                logger.info(f"跳过广告评论: keyword={keyword}, author={author}")
+                return True, f"广告关键词: {keyword}"
+
+        # 2. 感谢类评论检查
+        for pattern in self.auto_skip_patterns:
+            if pattern.match(content.strip()):
+                logger.info(f"跳过感谢评论: author={author}")
+                return True, "感谢类评论"
+
+        # 3. 重复评论检查
+        if author in self._recent_comments:
+            last_time = self._recent_comments[author]
+            elapsed_minutes = (timestamp - last_time) / 60
+            if elapsed_minutes < self.dedup_window_minutes:
+                logger.info(
+                    f"跳过重复评论: author={author}, "
+                    f"距上次 {elapsed_minutes:.0f} 分钟"
+                )
+                return True, f"重复评论（{elapsed_minutes:.0f}分钟内）"
+
+        # 记录本次评论时间
+        self._recent_comments[author] = timestamp
+
+        # 4. 通过所有过滤
+        return False, ""
+
 
     def _count_tokens(self, text: str) -> int:
         """计算文本 token 数

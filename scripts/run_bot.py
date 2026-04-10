@@ -137,8 +137,11 @@ class BotRunner:
             archive_dir=str(self.root / "archive")
         )
 
-        # 评论过滤器
-        self.comment_filter = CommentFilter(settings=self.settings)
+        # 评论过滤器（data_dir 用于持久化 dedup 缓存，FIX-04）
+        self.comment_filter = CommentFilter(
+            settings=self.settings,
+            data_dir=str(self.root / "data"),
+        )
 
         # 告警管理器
         self.alert_manager = AlertManager(
@@ -771,6 +774,9 @@ class BotRunner:
 
             # 保存状态
             self.save_seen_ids()
+            # 持久化 dedup 缓存（FIX-04）
+            if self.comment_filter:
+                self.comment_filter.save_dedup_cache()
 
             # 费用报告
             if self.cost_tracker:

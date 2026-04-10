@@ -242,3 +242,58 @@ class TestEdgeCases:
         comment = _make_comment("普通评论")
         skip, reason = f.should_skip(comment)
         assert skip is False
+
+
+# ===== dedup 持久化测试（FIX-04）=====
+
+class TestDedupPersistence:
+    """验证 dedup 缓存跨 run 持久化（FIX-04）"""
+
+    def test_save_and_load_dedup_cache(self, tmp_path):
+        """保存后再加载，重复检测应跨 run 有效"""
+        f1 = CommentFilter(settings=SAMPLE_SETTINGS, data_dir=str(tmp_path))
+        t = time.time()  # 使用当前时间确保不被清理
+
+        # 第一个实例处理评论
+        c1 = _make_comment("第一条", author="user_x", created_time=t)
+        f1.should_skip(c1, current_time=t)
+        f1.save_dedup_cache()
+
+        # 第二个实例（模拟下次 run）加载缓存
+        f2 = CommentFilter(settings=SAMPLE_SETTINGS, data_dir=str(tmp_path))
+
+        # 30 分钟内再次评论应被跳过
+        c2 = _make_comment("第二条", author="user_x", created_time=t + 30 * 60)
+        skip, reason = f2.should_skip(c2, current_time=t + 30 * 60)
+        assert skip is True, "跨 run 重复检测应生效"
+        assert "重复" in reason
+
+    def test_expired_entries_cleaned_on_save(self, tmp_path):
+        """save 时过期条目应被清理"""
+        f = CommentFilter(settings=SAMPLE_SETTINGS, data_dir=str(tmp_path))
+
+        # 模拟 2 小时前的评论（超过 60 分钟窗口）
+        old_time = time.time() - 2 * 3600
+        f._recent_comments["old_user"] = old_time
+        f.save_dedup_cache()
+
+        # 重新加载后不含过期条目
+        f2 = CommentFilter(settings=SAMPLE_SETTINGS, data_dir=str(tmp_path))
+        assert "old_user" not in f2._recent_comments
+
+    def test_no_data_dir_no_file(self, tmp_path):
+        """无 data_dir 时不创建文件，save 无副作用"""
+        f = CommentFilter(settings=SAMPLE_SETTINGS)  # 不传 data_dir
+        f._recent_comments["user"] = time.time()
+        f.save_dedup_cache()  # 应无异常
+
+        # 不存在 dedup 文件
+        assert not (tmp_path / "dedup_cache.json").exists()
+
+    def test_invalid_cache_file_resets(self, tmp_path):
+        """损坏的缓存文件应被忽略，重置为空"""
+        cache_file = tmp_path / "dedup_cache.json"
+        cache_file.write_text("not valid json{")
+
+        f = CommentFilter(settings=SAMPLE_SETTINGS, data_dir=str(tmp_path))
+        assert f._recent_comments == {}
