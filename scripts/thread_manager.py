@@ -153,7 +153,7 @@ class ThreadManager:
         elif model:
             # 机器人回复
             token_info = f", tokens: {tokens}" if tokens else ""
-            header = f"\n\n### {time_str} · 机器人回复（model: {model}{token_info}）\n"
+            header = f"\n\n### {time_str} · Bot 回复（model: {model}{token_info}）\n"
             body = f"\n{content}\n"
         elif is_followup:
             # 用户追问
@@ -211,7 +211,7 @@ class ThreadManager:
         # 转换为 OpenAI messages 格式
         messages = []
         for turn in turns:
-            role = "assistant" if turn["is_bot_or_human"] else "user"
+            role = "assistant" if turn["is_bot"] else "user"
             messages.append({"role": role, "content": turn["content"]})
 
         logger.debug(
@@ -229,7 +229,7 @@ class ThreadManager:
             content: 线程文件正文内容
 
         Returns:
-            对话轮次列表，每项含 is_bot_or_human 和 content
+            对话轮次列表，每项含 is_bot 和 content
         """
         turns = []
         # 匹配 ### 开头的对话条目
@@ -240,11 +240,8 @@ class ThreadManager:
             if not section.startswith("###"):
                 continue
 
-            # 判断是 bot/human 还是 user
-            is_bot_or_human = (
-                "机器人回复" in section
-                or "真人回复" in section
-            )
+            # 判断是 bot（assistant）还是 user（含真人回复和用户评论）
+            is_bot = "Bot 回复" in section or "机器人回复" in section
 
             # 提取内容（去掉标题行）
             lines = section.split("\n", 1)
@@ -255,7 +252,7 @@ class ThreadManager:
 
             if body:
                 turns.append({
-                    "is_bot_or_human": is_bot_or_human,
+                    "is_bot": is_bot,
                     "content": body,
                 })
 

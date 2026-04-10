@@ -22,7 +22,7 @@ import os
 import time
 from typing import Optional
 
-from openai import OpenAI, RateLimitError, APIError
+from openai import OpenAI, RateLimitError, APIError, APIConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class LLMClient:
         max_tokens: int = 250,
         temperature: float = 0.7,
         budget_usd_per_day: float = 0.50,
+        max_retries: int = 3,
     ) -> None:
         """
         初始化 LLM 客户端
@@ -107,6 +108,7 @@ class LLMClient:
             max_tokens: 最大生成 token 数
             temperature: 生成温度
             budget_usd_per_day: 每日费用预算上限（USD）
+            max_retries: 最大重试次数（默认 3）
         """
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
         self.base_url = base_url or os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
@@ -114,10 +116,11 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.budget_usd_per_day = budget_usd_per_day
+        self.MAX_RETRIES = max_retries
 
         # 初始化 OpenAI 客户端
         # 参考: docs/调研/03-LLM接入与回复生成.md § 1. API 兼容性
-        self.client = OpenAI(
+        self._client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
         )
@@ -178,7 +181,7 @@ class LLMClient:
         system_content = (
             f"{SYSTEM_PROMPT_PREFIX}\n"
             f"文章背景：{article_summary}\n\n"
-            f"参考知识库：\n{wiki_context}"
+            f"参考资料：\n{wiki_context}"
         )
 
         # 构建 messages
@@ -200,7 +203,7 @@ class LLMClient:
         # 提取回复和 token 使用
         reply = response.choices[0].message.content or ""
         usage = response.usage
-        total_tokens = usage.total_tokens if usage else 0
+        total_tokens = (usage.prompt_tokens + usage.completion_tokens) if usage else 0
 
         # 记录费用
         # 参考: docs/plan/README.md § AI-006 第 5 点 — 累计 token 费用
@@ -280,7 +283,7 @@ class LLMClient:
         last_error = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                return self.client.chat.completions.create(
+                return self._client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     max_tokens=max_tokens or self.max_tokens,
@@ -291,16 +294,16 @@ class LLMClient:
                 wait = 2 ** attempt
                 logger.warning("LLM 限流，第 %d/%d 次重试，等待 %ds", attempt + 1, self.MAX_RETRIES, wait)
                 time.sleep(wait)
-            except APIError as e:
+            except (APIError, APIConnectionError) as e:
                 last_error = e
-                if hasattr(e, 'status_code') and e.status_code and e.status_code >= 500:
+                if isinstance(e, APIConnectionError) or (hasattr(e, 'status_code') and e.status_code and e.status_code >= 500):
                     wait = 2 ** attempt
                     logger.warning("LLM 服务端错误 (%s)，第 %d/%d 次重试", e, attempt + 1, self.MAX_RETRIES)
                     time.sleep(wait)
                 else:
                     raise
 
-        raise RuntimeError(f"LLM 调用失败，已重试 {self.MAX_RETRIES} 次: {last_error}")
+        raise last_error  # type: ignore[misc]
 
     def _track_cost(self, usage) -> None:
         """
@@ -313,8 +316,12 @@ class LLMClient:
         self._total_prompt_tokens += usage.prompt_tokens
         self._total_completion_tokens += usage.completion_tokens
 
-        # 检查 DeepSeek 缓存命中
-        cache_hit = getattr(usage, 'prompt_cache_hit_tokens', 0) or 0
+        # 检查 DeepSeek 缓存命中（通过 prompt_tokens_details.cached_tokens）
+        details = getattr(usage, 'prompt_tokens_details', None)
+        cache_hit = getattr(details, 'cached_tokens', 0) or 0
+        # 降级到旧字段名（兼容不同版本 API）
+        if not cache_hit:
+            cache_hit = getattr(usage, 'prompt_cache_hit_tokens', 0) or 0
         self._total_cache_hit_tokens += cache_hit
 
         cost = self._calculate_cost(usage)
@@ -327,7 +334,11 @@ class LLMClient:
 
         pricing = PRICING.get(self.model, PRICING["default"])
 
-        cache_hit = getattr(usage, 'prompt_cache_hit_tokens', 0) or 0
+        # 优先从 prompt_tokens_details.cached_tokens 读取缓存命中数
+        details = getattr(usage, 'prompt_tokens_details', None)
+        cache_hit = getattr(details, 'cached_tokens', 0) or 0
+        if not cache_hit:
+            cache_hit = getattr(usage, 'prompt_cache_hit_tokens', 0) or 0
         regular_input = usage.prompt_tokens - cache_hit
 
         cost = (
@@ -343,14 +354,24 @@ class LLMClient:
         return self._daily_cost_usd
 
     @property
-    def stats(self) -> dict:
-        """使用统计"""
-        return {
-            "total_prompt_tokens": self._total_prompt_tokens,
-            "total_completion_tokens": self._total_completion_tokens,
-            "total_cache_hit_tokens": self._total_cache_hit_tokens,
-            "daily_cost_usd": self._daily_cost_usd,
-        }
+    def total_cost_usd(self) -> float:
+        """当日累计费用（USD）"""
+        return self._daily_cost_usd
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        """累计输入 token 数"""
+        return self._total_prompt_tokens
+
+    @property
+    def total_completion_tokens(self) -> int:
+        """累计输出 token 数"""
+        return self._total_completion_tokens
+
+    @property
+    def total_cache_hit_tokens(self) -> int:
+        """累计缓存命中 token 数"""
+        return self._total_cache_hit_tokens
 
     def reset_daily_cost(self) -> None:
         """重置每日费用计数器（新一天开始时调用）"""

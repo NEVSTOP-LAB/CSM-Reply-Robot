@@ -107,20 +107,22 @@ class ZhihuClient:
     REQUEST_DELAY_MAX = 2.0  # 秒
     PAGE_LIMIT = 20  # 每页最大数量
 
-    def __init__(self, cookie: str) -> None:
+    def __init__(self, cookie: str, max_retries: int = 3) -> None:
         """
         初始化知乎客户端
 
         Args:
             cookie: 完整的知乎 Cookie 字符串（如 "z_c0=xxx; _xsrf=yyy"）
+            max_retries: 429 限流最大重试次数（默认 3）
 
         Raises:
-            ValueError: Cookie 为空或无法提取 _xsrf
+            ValueError: Cookie 为空
         """
         if not cookie:
             raise ValueError("Cookie 不能为空")
 
         self.cookie = cookie
+        self.max_retries = max_retries
         self._xsrf = self._extract_xsrf(cookie)
         self.session = requests.Session()
         self.session.headers.update(self.DEFAULT_HEADERS)
@@ -129,7 +131,7 @@ class ZhihuClient:
         logger.info("ZhihuClient 初始化完成，_xsrf=%s...", self._xsrf[:8] if self._xsrf else "N/A")
 
     @staticmethod
-    def _extract_xsrf(cookie: str) -> str:
+    def _extract_xsrf(cookie: str) -> Optional[str]:
         """
         从 Cookie 字符串中提取 _xsrf 值
         参考: docs/plan/README.md § AI-003 第 3 点
@@ -138,15 +140,32 @@ class ZhihuClient:
             cookie: Cookie 字符串
 
         Returns:
-            _xsrf token 值
-
-        Raises:
-            ValueError: 无法提取 _xsrf
+            _xsrf token 值，未找到时返回 None
         """
         match = re.search(r'_xsrf=([^;]+)', cookie)
-        if not match:
-            raise ValueError("Cookie 中未找到 _xsrf 字段，请确认 Cookie 格式正确")
-        return match.group(1)
+        return match.group(1) if match else None
+
+    def _build_read_url(self, object_id: str, object_type: str) -> str:
+        """
+        构建评论读取 API URL
+        参考: docs/调研/01-知乎数据获取.md API 端点说明
+
+        Args:
+            object_id: 文章 ID 或回答 ID
+            object_type: "article" 或 "question"
+
+        Returns:
+            完整的 API URL
+
+        Raises:
+            ValueError: 不支持的 object_type
+        """
+        if object_type == "article":
+            return f"{self.API_READ_BASE}/articles/{object_id}/comments"
+        elif object_type == "question":
+            return f"{self.API_READ_BASE}/answers/{object_id}/comments"
+        else:
+            raise ValueError(f"不支持的 object_type: {object_type}，应为 'article' 或 'question'")
 
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         """
@@ -167,7 +186,7 @@ class ZhihuClient:
         """
         last_exception: Optional[Exception] = None
 
-        for attempt in range(self.MAX_RETRIES):
+        for attempt in range(self.max_retries):
             try:
                 response = self.session.request(method, url, **kwargs)
 
@@ -175,7 +194,7 @@ class ZhihuClient:
                 if response.status_code in (401, 403):
                     logger.error("认证失败 (HTTP %d)，Cookie 可能已失效", response.status_code)
                     raise ZhihuAuthError(
-                        f"HTTP {response.status_code}: Cookie 失效或权限不足"
+                        f"认证失败 HTTP {response.status_code}: Cookie 失效或权限不足"
                     )
 
                 # 限流 → 指数退避重试
@@ -183,7 +202,7 @@ class ZhihuClient:
                     wait = (2 ** attempt) + random.random()
                     logger.warning(
                         "HTTP 429 限流，第 %d/%d 次重试，等待 %.1f 秒",
-                        attempt + 1, self.MAX_RETRIES, wait
+                        attempt + 1, self.max_retries, wait
                     )
                     time.sleep(wait)
                     continue
@@ -195,16 +214,16 @@ class ZhihuClient:
                 raise
             except requests.RequestException as e:
                 last_exception = e
-                if attempt < self.MAX_RETRIES - 1:
+                if attempt < self.max_retries - 1:
                     wait = (2 ** attempt) + random.random()
                     logger.warning(
                         "请求异常 (%s)，第 %d/%d 次重试，等待 %.1f 秒",
-                        e, attempt + 1, self.MAX_RETRIES, wait
+                        e, attempt + 1, self.max_retries, wait
                     )
                     time.sleep(wait)
 
         raise ZhihuRateLimitError(
-            f"请求失败，已重试 {self.MAX_RETRIES} 次: {last_exception}"
+            f"请求失败，已重试 {self.max_retries} 次: {last_exception}"
         )
 
     def get_comments(
@@ -233,12 +252,7 @@ class ZhihuClient:
             ZhihuAuthError: Cookie 失效
             ValueError: 不支持的 object_type
         """
-        if object_type == "article":
-            base_url = f"{self.API_READ_BASE}/articles/{object_id}/comments"
-        elif object_type == "question":
-            base_url = f"{self.API_READ_BASE}/answers/{object_id}/comments"
-        else:
-            raise ValueError(f"不支持的 object_type: {object_type}，应为 'article' 或 'question'")
+        base_url = self._build_read_url(object_id, object_type)
 
         all_comments: list[Comment] = []
         offset = 0
@@ -296,7 +310,7 @@ class ZhihuClient:
             id=str(item.get("id", "")),
             parent_id=str(item["reply_comment"]["id"]) if item.get("reply_comment") else None,
             content=item.get("content", ""),
-            author=author_info.get("name", "未知用户"),
+            author=author_info.get("name", "unknown"),
             created_time=item.get("created_time", 0),
             is_author_reply=item.get("is_author", False),
         )
@@ -333,6 +347,11 @@ class ZhihuClient:
             "object_id": object_id,
             "object_type": object_type,
         }
+        # _xsrf 缺失时无法发布，直接返回 False
+        if not self._xsrf:
+            logger.warning("Cookie 中无 _xsrf token，无法发布评论")
+            return False
+
         if parent_id:
             payload["parent_id"] = parent_id
 

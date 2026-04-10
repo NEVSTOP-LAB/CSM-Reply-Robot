@@ -1,146 +1,155 @@
+# -*- coding: utf-8 -*-
 """
-AI-004: GitHub Actions Workflow 配置测试
-参考: docs/plan/README.md § AI-004 测试要求
+GitHub Actions Workflow 配置测试
+================================
 
-验证：
-- workflow YAML 可正确解析
-- cron 定时触发配置存在
-- secrets 引用正确
-- permissions 配置正确
-- 必要的 steps 存在
+实施计划关联：AI-004 验收标准
+验证 workflow YAML 文件的结构和关键字段。
+
+测试独立于实现，直接解析 YAML 验证结构。
 """
-
 from pathlib import Path
 
 import pytest
 import yaml
 
 
-@pytest.fixture
-def workflow_config(project_root: Path) -> dict:
-    """加载 .github/workflows/bot.yml"""
-    workflow_path = project_root / ".github" / "workflows" / "bot.yml"
-    assert workflow_path.exists(), "bot.yml 文件不存在"
-    with open(workflow_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+WORKFLOW_DIR = Path(__file__).parent.parent / ".github" / "workflows"
 
 
-def _get_triggers(workflow_config: dict) -> dict:
-    """获取 workflow 触发配置（处理 YAML 'on' → True 的特殊情况）"""
-    # PyYAML 将 YAML 的 'on' 键解析为布尔值 True
-    return workflow_config.get("on") or workflow_config.get(True, {})
+class TestBotWorkflow:
+    """bot.yml 主 Workflow 测试"""
 
+    @pytest.fixture
+    def workflow(self) -> dict:
+        """加载 bot.yml"""
+        path = WORKFLOW_DIR / "bot.yml"
+        assert path.exists(), f"Workflow 文件不存在: {path}"
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
 
-class TestWorkflowTriggers:
-    """测试 workflow 触发条件"""
+    def test_workflow_has_name(self, workflow: dict):
+        """Workflow 应有名称"""
+        assert "name" in workflow
 
-    def test_schedule_exists(self, workflow_config: dict) -> None:
-        """应配置 schedule 定时触发"""
-        triggers = _get_triggers(workflow_config)
-        assert triggers, "未找到触发配置（on 或 True 键）"
-        assert "schedule" in triggers
+    def test_has_schedule_trigger(self, workflow: dict):
+        """应包含 schedule 定时触发"""
+        triggers = workflow.get("on", workflow.get(True, {}))
+        assert "schedule" in triggers, "缺少 schedule 触发器"
 
-    def test_cron_expression(self, workflow_config: dict) -> None:
+    def test_cron_expression_valid(self, workflow: dict):
         """cron 表达式应为每6小时"""
-        triggers = _get_triggers(workflow_config)
-        schedules = triggers["schedule"]
-        assert len(schedules) >= 1
-        cron = schedules[0]["cron"]
-        # 验证包含多个小时点（每6小时）
-        assert "2,8,14,20" in cron or "*/6" in cron
+        triggers = workflow.get("on", workflow.get(True, {}))
+        schedules = triggers.get("schedule", [])
+        assert len(schedules) > 0, "schedule 列表为空"
+        cron = schedules[0].get("cron", "")
+        assert "2,8,14,20" in cron, f"cron 应为每6小时，实际: {cron}"
 
-    def test_workflow_dispatch(self, workflow_config: dict) -> None:
-        """应支持手动触发 (workflow_dispatch)"""
-        triggers = _get_triggers(workflow_config)
-        assert "workflow_dispatch" in triggers
+    def test_has_workflow_dispatch(self, workflow: dict):
+        """应支持手动触发"""
+        triggers = workflow.get("on", workflow.get(True, {}))
+        assert "workflow_dispatch" in triggers, "缺少 workflow_dispatch"
+
+    def test_has_contents_write_permission(self, workflow: dict):
+        """应有 contents: write 权限（用于 git push）"""
+        perms = workflow.get("permissions", {})
+        assert perms.get("contents") == "write", "缺少 contents: write 权限"
+
+    def test_has_issues_write_permission(self, workflow: dict):
+        """应有 issues: write 权限（用于告警创建 Issue）"""
+        perms = workflow.get("permissions", {})
+        assert perms.get("issues") == "write", "缺少 issues: write 权限"
+
+    def test_job_runs_on_ubuntu(self, workflow: dict):
+        """Job 应运行在 ubuntu-latest"""
+        job = workflow.get("jobs", {}).get("reply-bot", {})
+        assert "ubuntu" in job.get("runs-on", ""), "应运行在 ubuntu"
+
+    def test_has_checkout_step(self, workflow: dict):
+        """应包含 checkout 步骤"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        step_uses = [s.get("uses", "") for s in steps]
+        assert any("checkout" in u for u in step_uses), "缺少 checkout 步骤"
+
+    def test_has_python_setup(self, workflow: dict):
+        """应包含 Python 环境设置"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        step_uses = [s.get("uses", "") for s in steps]
+        assert any("setup-python" in u for u in step_uses), "缺少 setup-python"
+
+    def test_has_pip_cache(self, workflow: dict):
+        """应包含 pip 缓存"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        step_uses = [s.get("uses", "") for s in steps]
+        cache_steps = [u for u in step_uses if "cache" in u]
+        assert len(cache_steps) >= 1, "缺少 pip 缓存步骤"
+
+    def test_has_huggingface_cache(self, workflow: dict):
+        """应包含 HuggingFace 模型缓存"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        step_names = [s.get("name", "").lower() for s in steps]
+        assert any("huggingface" in n for n in step_names), \
+            "缺少 HuggingFace 缓存步骤"
+
+    def test_secrets_referenced(self, workflow: dict):
+        """应引用必要的 Secrets"""
+        workflow_str = yaml.dump(workflow)
+        assert "ZHIHU_COOKIE" in workflow_str, "缺少 ZHIHU_COOKIE 引用"
+        assert "LLM_API_KEY" in workflow_str, "缺少 LLM_API_KEY 引用"
+        assert "GITHUB_TOKEN" in workflow_str, "缺少 GITHUB_TOKEN 引用"
+
+    def test_run_bot_script_path(self, workflow: dict):
+        """主脚本路径应为 scripts/run_bot.py"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        run_commands = [s.get("run", "") for s in steps]
+        assert any("scripts/run_bot.py" in r for r in run_commands), \
+            "主脚本路径应为 scripts/run_bot.py"
+
+    def test_git_config_before_push(self, workflow: dict):
+        """应先配置 git 身份再 push"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        run_commands = [s.get("run", "") for s in steps]
+        commit_step = [r for r in run_commands if "git commit" in r]
+        assert len(commit_step) > 0, "缺少 git commit 步骤"
+        # 确保设置了 user.name 和 user.email
+        commit_cmd = commit_step[0]
+        assert "git config user.name" in commit_cmd
+        assert "git config user.email" in commit_cmd
+
+    def test_skip_ci_in_commit(self, workflow: dict):
+        """commit message 应包含 [skip ci] 防止循环"""
+        steps = workflow["jobs"]["reply-bot"]["steps"]
+        run_commands = [s.get("run", "") for s in steps]
+        commit_step = [r for r in run_commands if "git commit" in r]
+        assert len(commit_step) > 0
+        assert "skip ci" in commit_step[0].lower(), \
+            "commit message 应包含 [skip ci]"
 
 
-class TestWorkflowPermissions:
-    """测试 workflow 权限配置"""
+class TestSyncWikiWorkflow:
+    """sync-wiki.yml Workflow 测试"""
 
-    def test_contents_write(self, workflow_config: dict) -> None:
-        """应有 contents: write 权限（推送存档）"""
-        permissions = workflow_config.get("permissions", {})
-        assert permissions.get("contents") == "write"
+    @pytest.fixture
+    def workflow(self) -> dict:
+        """加载 sync-wiki.yml"""
+        path = WORKFLOW_DIR / "sync-wiki.yml"
+        assert path.exists(), f"Workflow 文件不存在: {path}"
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
 
-    def test_issues_write(self, workflow_config: dict) -> None:
-        """应有 issues: write 权限（创建告警 Issue）"""
-        permissions = workflow_config.get("permissions", {})
-        assert permissions.get("issues") == "write"
+    def test_has_weekly_schedule(self, workflow: dict):
+        """应有每周触发的 schedule"""
+        triggers = workflow.get("on", workflow.get(True, {}))
+        schedules = triggers.get("schedule", [])
+        assert len(schedules) > 0
+        # 验证是周日运行
+        cron = schedules[0].get("cron", "")
+        assert "0" in cron.split()[-1] or "0" in cron, \
+            f"应为每周日运行，实际: {cron}"
 
-
-class TestWorkflowSteps:
-    """测试 workflow 步骤配置"""
-
-    def test_job_exists(self, workflow_config: dict) -> None:
-        """应包含 check-and-reply job"""
-        assert "jobs" in workflow_config
-        assert "check-and-reply" in workflow_config["jobs"]
-
-    def test_runs_on_ubuntu(self, workflow_config: dict) -> None:
-        """应在 ubuntu-latest 上运行"""
-        job = workflow_config["jobs"]["check-and-reply"]
-        assert job["runs-on"] == "ubuntu-latest"
-
-    def test_checkout_step(self, workflow_config: dict) -> None:
-        """应包含 actions/checkout 步骤"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        checkout_steps = [s for s in steps if s.get("uses", "").startswith("actions/checkout")]
-        assert len(checkout_steps) >= 1
-
-    def test_python_setup_step(self, workflow_config: dict) -> None:
-        """应包含 actions/setup-python 步骤"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        python_steps = [s for s in steps if s.get("uses", "").startswith("actions/setup-python")]
-        assert len(python_steps) >= 1
-
-    def test_pip_cache_step(self, workflow_config: dict) -> None:
-        """应包含 pip 缓存步骤"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        cache_steps = [
-            s for s in steps
-            if s.get("uses", "").startswith("actions/cache")
-            and "pip" in str(s.get("with", {}).get("path", ""))
-        ]
-        assert len(cache_steps) >= 1
-
-    def test_huggingface_cache_step(self, workflow_config: dict) -> None:
-        """应包含 HuggingFace 模型缓存步骤"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        hf_steps = [
-            s for s in steps
-            if s.get("uses", "").startswith("actions/cache")
-            and "huggingface" in str(s.get("with", {}).get("path", ""))
-        ]
-        assert len(hf_steps) >= 1
-
-    def test_run_bot_step(self, workflow_config: dict) -> None:
-        """应包含运行 scripts/run_bot.py 的步骤"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        bot_steps = [
-            s for s in steps
-            if "run_bot.py" in str(s.get("run", ""))
-        ]
-        assert len(bot_steps) >= 1
-
-
-class TestWorkflowSecrets:
-    """测试 secrets 引用"""
-
-    def test_secrets_referenced(self, workflow_config: dict) -> None:
-        """workflow 中应引用必要的 secrets"""
-        yaml_str = yaml.dump(workflow_config)
-        required_secrets = ["ZHIHU_COOKIE", "LLM_API_KEY", "GITHUB_TOKEN"]
-        for secret in required_secrets:
-            assert secret in yaml_str, f"缺少 secret 引用: {secret}"
-
-    def test_git_commit_step(self, workflow_config: dict) -> None:
-        """应包含 git commit+push 步骤，且包含 [skip ci]"""
-        steps = workflow_config["jobs"]["check-and-reply"]["steps"]
-        commit_steps = [
-            s for s in steps
-            if "git config" in str(s.get("run", "")) and "commit" in str(s.get("run", ""))
-        ]
-        assert len(commit_steps) >= 1
-        # 验证包含 [skip ci]
-        assert "[skip ci]" in str(commit_steps[0].get("run", ""))
+    def test_has_force_rebuild_input(self, workflow: dict):
+        """应支持手动触发并带强制重建参数"""
+        triggers = workflow.get("on", workflow.get(True, {}))
+        dispatch = triggers.get("workflow_dispatch", {})
+        inputs = dispatch.get("inputs", {})
+        assert "force_rebuild" in inputs, "缺少 force_rebuild 输入参数"

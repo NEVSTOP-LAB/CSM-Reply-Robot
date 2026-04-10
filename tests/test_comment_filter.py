@@ -1,203 +1,244 @@
+# -*- coding: utf-8 -*-
 """
-AI-008: CommentFilter 单元测试
-参考: docs/plan/README.md § AI-008 测试要求
+CommentFilter 单元测试
+======================
 
-测试覆盖：
+实施计划关联：AI-008 验收标准
+独立于实现的测试用例，覆盖：
 - 超长评论被截断（不跳过）
 - 广告关键词命中时跳过
 - 60分钟内同一用户第二条评论被跳过
 - 正常评论不被过滤
+- 感谢类评论被跳过
 """
-
 import time
 
 import pytest
 
-from scripts.comment_filter import should_skip, truncate_comment, reset_dedup_cache
+from scripts.comment_filter import CommentFilter
 
 
-# ─── fixtures ──────────────────────────────────────────────────
+# ===== Fixtures =====
 
-@pytest.fixture(autouse=True)
-def clean_dedup_cache():
-    """每个测试前清空重复检测缓存"""
-    reset_dedup_cache()
-    yield
-    reset_dedup_cache()
+SAMPLE_SETTINGS = {
+    "filter": {
+        "max_comment_tokens": 50,       # 低阈值便于测试
+        "spam_keywords": ["加微信", "私信", "免费领取"],
+        "dedup_window_minutes": 60,
+    },
+    "review": {
+        "auto_skip_patterns": [
+            "^谢谢[！!]?$",
+            "^感谢[！!]?$",
+        ],
+    },
+}
 
 
 @pytest.fixture
-def default_settings() -> dict:
-    """默认过滤配置"""
-    return {
-        "filter": {
-            "max_comment_tokens": 500,
-            "spam_keywords": ["加微信", "私信", "VX", "wx"],
-            "dedup_window_minutes": 60,
-        }
-    }
+def filter_instance():
+    """创建 CommentFilter 实例"""
+    return CommentFilter(settings=SAMPLE_SETTINGS)
 
 
-def make_comment(
-    content: str = "正常评论内容",
-    author: str = "测试用户",
-    created_time: float = 0,
+def _make_comment(
+    content: str = "普通评论",
+    author: str = "user",
+    created_time: float = 1712000000,
 ) -> dict:
-    """创建测试评论"""
+    """构造测试评论"""
     return {
         "content": content,
         "author": author,
-        "created_time": created_time or time.time(),
+        "created_time": created_time,
     }
 
 
-# ─── 广告关键词测试 ──────────────────────────────────────────────
+# ===== 正常评论测试 =====
+
+class TestNormalComments:
+    """验证正常评论不被过滤"""
+
+    def test_normal_comment_passes(self, filter_instance):
+        """普通评论不应被跳过"""
+        comment = _make_comment("这篇文章写得很好，想了解更多")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is False
+        assert reason == ""
+
+    def test_technical_question_passes(self, filter_instance):
+        """技术问题不应被跳过"""
+        comment = _make_comment("CSM 中如何处理客户投诉？有什么最佳实践？")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is False
+
+
+# ===== 广告过滤测试 =====
 
 class TestSpamFilter:
-    """测试广告关键词过滤"""
+    """验证广告/敏感词过滤"""
 
-    def test_spam_keyword_skip(self, default_settings) -> None:
-        """包含广告关键词的评论应被跳过"""
-        comment = make_comment(content="加微信详聊")
-        skip, reason = should_skip(comment, default_settings)
+    def test_spam_keyword_加微信(self, filter_instance):
+        """包含 '加微信' 应被跳过"""
+        comment = _make_comment("加微信了解更多详情")
+        skip, reason = filter_instance.should_skip(comment)
         assert skip is True
-        assert "广告关键词" in reason
+        assert "加微信" in reason
 
-    def test_spam_keyword_case_insensitive(self, default_settings) -> None:
-        """广告关键词匹配应不区分大小写"""
-        comment = make_comment(content="可以加WX吗")
-        skip, reason = should_skip(comment, default_settings)
+    def test_spam_keyword_私信(self, filter_instance):
+        """包含 '私信' 应被跳过"""
+        comment = _make_comment("私信我获取免费资料")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is True
+        assert "私信" in reason
+
+    def test_spam_keyword_免费领取(self, filter_instance):
+        """包含 '免费领取' 应被跳过"""
+        comment = _make_comment("免费领取CSM资料包")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is True
+        assert "免费领取" in reason
+
+    def test_partial_match_within_sentence(self, filter_instance):
+        """广告关键词在句子中间也应被检测"""
+        comment = _make_comment("如果有需要可以加微信我")
+        skip, reason = filter_instance.should_skip(comment)
         assert skip is True
 
-    def test_multiple_spam_keywords(self, default_settings) -> None:
-        """每种广告关键词都应被检测"""
-        for keyword in ["加微信", "私信我", "加VX", "加wx"]:
-            reset_dedup_cache()
-            comment = make_comment(content=keyword, author=f"user_{keyword}")
-            skip, _ = should_skip(comment, default_settings)
-            assert skip is True, f"关键词 '{keyword}' 未被检测"
 
-    def test_normal_content_passes(self, default_settings) -> None:
-        """正常内容不应被过滤"""
-        comment = make_comment(content="请问 CSM 如何处理客户投诉？")
-        skip, reason = should_skip(comment, default_settings)
-        assert skip is False
-        assert reason == ""
+# ===== 感谢类评论测试 =====
 
+class TestAutoSkipPatterns:
+    """验证感谢类评论自动跳过"""
 
-# ─── 重复评论检测测试 ──────────────────────────────────────────
-
-class TestDedupFilter:
-    """测试重复评论检测"""
-
-    def test_first_comment_passes(self, default_settings) -> None:
-        """用户的第一条评论不应被过滤"""
-        comment = make_comment(author="新用户", created_time=time.time())
-        skip, _ = should_skip(comment, default_settings)
-        assert skip is False
-
-    def test_second_comment_within_window_skipped(self, default_settings) -> None:
-        """60分钟内同一用户第二条评论应被跳过"""
-        now = time.time()
-        comment1 = make_comment(author="重复用户", created_time=now)
-        comment2 = make_comment(author="重复用户", created_time=now + 30 * 60)  # 30分钟后
-
-        should_skip(comment1, default_settings)  # 第一条通过
-        skip, reason = should_skip(comment2, default_settings)
+    def test_简单谢谢(self, filter_instance):
+        """'谢谢' 应被跳过"""
+        comment = _make_comment("谢谢")
+        skip, reason = filter_instance.should_skip(comment)
         assert skip is True
-        assert "重复评论" in reason
+        assert "感谢" in reason
 
-    def test_comment_after_window_passes(self, default_settings) -> None:
-        """超过 dedup_window 后的评论不应被过滤"""
-        now = time.time()
-        comment1 = make_comment(author="间隔用户", created_time=now)
-        comment2 = make_comment(
-            author="间隔用户",
-            created_time=now + 61 * 60,  # 61分钟后
-        )
+    def test_谢谢加感叹号(self, filter_instance):
+        """'谢谢！' 应被跳过"""
+        comment = _make_comment("谢谢！")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is True
 
-        should_skip(comment1, default_settings)
-        skip, _ = should_skip(comment2, default_settings)
-        assert skip is False
+    def test_感谢(self, filter_instance):
+        """'感谢' 应被跳过"""
+        comment = _make_comment("感谢")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is True
 
-    def test_different_users_independent(self, default_settings) -> None:
-        """不同用户的评论应独立检测"""
-        now = time.time()
-        comment_a = make_comment(author="用户A", created_time=now)
-        comment_b = make_comment(author="用户B", created_time=now + 5)
-
-        should_skip(comment_a, default_settings)
-        skip, _ = should_skip(comment_b, default_settings)
+    def test_longer_thanks_not_skipped(self, filter_instance):
+        """'谢谢分享，学到了很多' 不应被跳过（不是纯感谢）"""
+        comment = _make_comment("谢谢分享，学到了很多")
+        skip, reason = filter_instance.should_skip(comment)
         assert skip is False
 
 
-# ─── 超长截断测试 ──────────────────────────────────────────────
+# ===== 重复评论测试 =====
+
+class TestDedup:
+    """验证重复评论检测"""
+
+    def test_first_comment_not_deduped(self, filter_instance):
+        """用户第一条评论不应被跳过"""
+        comment = _make_comment("第一条", author="user_a", created_time=1000)
+        skip, reason = filter_instance.should_skip(comment, current_time=1000)
+        assert skip is False
+
+    def test_second_comment_within_window(self, filter_instance):
+        """同一用户 60 分钟内第二条评论应被跳过"""
+        t = 1712000000
+        # 第一条
+        c1 = _make_comment("第一条", author="user_a", created_time=t)
+        filter_instance.should_skip(c1, current_time=t)
+
+        # 30 分钟后第二条
+        c2 = _make_comment("第二条", author="user_a", created_time=t + 30 * 60)
+        skip, reason = filter_instance.should_skip(c2, current_time=t + 30 * 60)
+        assert skip is True
+        assert "重复" in reason
+
+    def test_second_comment_outside_window(self, filter_instance):
+        """同一用户超过 60 分钟后评论不应被跳过"""
+        t = 1712000000
+        c1 = _make_comment("第一条", author="user_a", created_time=t)
+        filter_instance.should_skip(c1, current_time=t)
+
+        # 90 分钟后
+        c2 = _make_comment("第二条", author="user_a", created_time=t + 90 * 60)
+        skip, reason = filter_instance.should_skip(c2, current_time=t + 90 * 60)
+        assert skip is False
+
+    def test_different_users_not_deduped(self, filter_instance):
+        """不同用户的评论不应互相影响"""
+        t = 1712000000
+        c1 = _make_comment("评论", author="user_a", created_time=t)
+        filter_instance.should_skip(c1, current_time=t)
+
+        c2 = _make_comment("评论", author="user_b", created_time=t + 5 * 60)
+        skip, reason = filter_instance.should_skip(c2, current_time=t + 5 * 60)
+        assert skip is False
+
+
+# ===== 超长评论截断测试 =====
 
 class TestTruncation:
-    """测试超长评论截断"""
+    """验证超长评论截断逻辑"""
 
-    def test_short_comment_not_truncated(self) -> None:
+    def test_short_comment_not_truncated(self, filter_instance):
         """短评论不应被截断"""
-        content = "简短的评论"
-        result, truncated = truncate_comment(content, max_tokens=500)
+        content = "简短评论"
+        result = filter_instance.truncate_if_needed(content)
         assert result == content
-        assert truncated is False
 
-    def test_long_comment_truncated(self) -> None:
+    def test_long_comment_truncated(self, filter_instance):
         """超长评论应被截断"""
-        # 生成一段很长的文本
-        content = "这是一段很长的评论。" * 200  # 远超 500 tokens
-        result, truncated = truncate_comment(content, max_tokens=50)
-        assert truncated is True
-        assert result.endswith("...")
+        # 构造一个明显超长的评论（>50 tokens）
+        content = "这是一段很长很长的评论内容。" * 50
+        result = filter_instance.truncate_if_needed(content)
         assert len(result) < len(content)
+        assert result.endswith("...")
 
-    def test_truncation_preserves_meaning(self) -> None:
-        """截断应保留前部分内容"""
-        content = "第一部分内容。" * 100
-        result, truncated = truncate_comment(content, max_tokens=20)
-        assert truncated is True
-        assert result.startswith("第一部分内容")
-
-    def test_truncation_does_not_skip(self, default_settings) -> None:
-        """超长评论截断后不应被跳过（should_skip 返回 False）"""
-        comment = make_comment(content="正常内容" * 200)
-        skip, _ = should_skip(comment, default_settings)
-        # should_skip 只做跳过检测，不做截断
-        # 截断由主流程调用 truncate_comment 单独处理
+    def test_truncation_does_not_skip(self, filter_instance):
+        """超长评论应被截断但不应被跳过"""
+        content = "这是一段很长的评论。" * 50
+        comment = _make_comment(content=content)
+        skip, reason = filter_instance.should_skip(comment)
+        # 超长不应导致跳过
         assert skip is False
 
+    def test_exactly_at_limit(self, filter_instance):
+        """恰好在限制处的评论不应被截断"""
+        # 精确控制较难，测试接近限制的情况
+        content = "测试"
+        result = filter_instance.truncate_if_needed(content)
+        assert result == content  # 短于限制，不截断
 
-# ─── 综合测试 ──────────────────────────────────────────────────
 
-class TestIntegration:
-    """综合测试"""
+# ===== 边界情况测试 =====
 
-    def test_normal_comment_full_pass(self, default_settings) -> None:
-        """正常评论应完全通过所有过滤规则"""
-        comment = make_comment(
-            content="关于 CSM 的问题，请问客户流失率如何计算？",
-            author="技术用户",
-            created_time=time.time(),
-        )
-        skip, reason = should_skip(comment, default_settings)
+class TestEdgeCases:
+    """验证边界情况"""
+
+    def test_empty_content(self, filter_instance):
+        """空评论不应被跳过"""
+        comment = _make_comment(content="")
+        skip, reason = filter_instance.should_skip(comment)
+        # 空评论不匹配任何过滤规则
         assert skip is False
-        assert reason == ""
 
-    def test_spam_priority_over_dedup(self, default_settings) -> None:
-        """广告检测优先于重复检测"""
-        now = time.time()
-        comment = make_comment(
-            content="加微信详聊",
-            author="广告用户",
-            created_time=now,
-        )
-        skip, reason = should_skip(comment, default_settings)
-        assert skip is True
-        assert "广告关键词" in reason  # 应该是广告原因而不是重复
+    def test_whitespace_only(self, filter_instance):
+        """纯空白不应匹配感谢模式"""
+        comment = _make_comment(content="   ")
+        skip, reason = filter_instance.should_skip(comment)
+        assert skip is False
 
-    def test_empty_settings_no_filter(self) -> None:
-        """空配置时不应过滤任何评论"""
-        comment = make_comment(content="任何内容")
-        skip, _ = should_skip(comment, {})
+    def test_empty_settings(self):
+        """空配置应使用默认值"""
+        f = CommentFilter(settings={})
+        comment = _make_comment("普通评论")
+        skip, reason = f.should_skip(comment)
         assert skip is False

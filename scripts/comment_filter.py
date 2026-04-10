@@ -1,25 +1,27 @@
+# -*- coding: utf-8 -*-
 """
-AI-008: 评论前置过滤器
-参考: docs/plan/README.md § AI-008
+评论前置过滤器
+==============
+
+实施计划关联：AI-008 前置过滤器 — 边界情况处理
+参考文档：docs/Review-方案/ 评审建议
 
 功能：
-- should_skip(): 判断评论是否应跳过（广告、重复、超长等）
-- truncate_comment(): 截断超长评论
+- 超长评论截断（不跳过，截断后继续处理）
+- 广告/敏感词过滤（跳过）
+- 重复评论检测（同一用户在时间窗口内重复，跳过）
+- 自动跳过感谢类评论
 
-过滤规则（按优先级）：
-1. 广告/敏感词：命中 spam_keywords 时跳过
-2. 重复评论：同一 author 在 dedup_window_minutes 内重复出现时跳过
-3. 超长截断：评论 token 数 > max_comment_tokens 时截断（不跳过）
-
-设计说明：
-- 使用 tiktoken 精确计算 token 数
-- 重复检测基于内存中的作者+时间窗口缓存
-- 截断后的评论仍然可以被处理（返回 skip=False）
+使用方式：
+    filter = CommentFilter(settings)
+    should_skip, reason = filter.should_skip(comment)
+    if should_skip:
+        log(f"跳过评论: {reason}")
 """
-
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Optional
 
@@ -27,100 +29,136 @@ import tiktoken
 
 logger = logging.getLogger(__name__)
 
-# 全局重复检测缓存：{author: last_comment_timestamp}
-_dedup_cache: dict[str, float] = {}
 
+class CommentFilter:
+    """评论前置过滤器
 
-def should_skip(comment: object, settings: dict) -> tuple[bool, str]:
-    """
-    判断评论是否需要跳过
-    参考: docs/plan/README.md § AI-008 第 1 点
+    实施计划关联：AI-008
 
-    Args:
-        comment: 评论对象（需有 author, content, created_time 属性或键）
-        settings: 配置字典（含 filter 配置段）
-
-    Returns:
-        (是否跳过, 原因) 元组
-        跳过时返回 (True, "原因说明")
-        不跳过时返回 (False, "")
-    """
-    filter_settings = settings.get("filter", {})
-
-    # 获取评论属性（支持 dict 和 dataclass）
-    content = _get_attr(comment, "content", "")
-    author = _get_attr(comment, "author", "")
-    created_time = _get_attr(comment, "created_time", 0)
-
-    # 规则 1: 广告/敏感词检测
-    # 参考: docs/plan/README.md § AI-008 第 2 点 — 广告关键词
-    spam_keywords = filter_settings.get("spam_keywords", [])
-    for keyword in spam_keywords:
-        if keyword.lower() in content.lower():
-            logger.info("评论被过滤（广告关键词 '%s'）: author=%s", keyword, author)
-            return True, f"广告关键词: {keyword}"
-
-    # 规则 2: 重复评论检测
-    # 参考: docs/plan/README.md § AI-008 第 2 点 — 同一 author 在 dedup_window_minutes 内重复
-    dedup_minutes = filter_settings.get("dedup_window_minutes", 60)
-    dedup_seconds = dedup_minutes * 60
-    current_time = created_time or time.time()
-
-    if author in _dedup_cache:
-        last_time = _dedup_cache[author]
-        if current_time - last_time < dedup_seconds:
-            logger.info(
-                "评论被过滤（重复评论，%d分钟内）: author=%s",
-                dedup_minutes, author,
-            )
-            return True, f"重复评论: {author} 在 {dedup_minutes} 分钟内已有评论"
-
-    # 更新重复检测缓存
-    _dedup_cache[author] = current_time
-
-    return False, ""
-
-
-def truncate_comment(content: str, max_tokens: int = 500) -> tuple[str, bool]:
-    """
-    截断超长评论
-    参考: docs/plan/README.md § AI-008 第 2 点 — 超长截断
-    参考: docs/调研/06-Token优化策略.md § 6. 截断超长评论
-
-    使用 tiktoken 精确计算 token 数（离线不可用时降级为字符估算）。
+    在主流程处理评论前进行过滤，支持：
+    - 超长截断（>max_comment_tokens 时截断，不跳过）
+    - 广告关键词（命中 spam_keywords 时跳过）
+    - 重复评论（同一 author 在 dedup_window_minutes 内跳过）
+    - 感谢类评论（命中 auto_skip_patterns 时跳过）
 
     Args:
-        content: 评论内容
-        max_tokens: 最大 token 数（默认 500）
-
-    Returns:
-        (截断后的内容, 是否被截断) 元组
+        settings: 配置字典（来自 config/settings.yaml）
     """
-    try:
-        encoding = tiktoken.get_encoding("cl100k_base")
-        tokens = encoding.encode(content)
-        if len(tokens) <= max_tokens:
-            return content, False
-        truncated = encoding.decode(tokens[:max_tokens])
-        logger.info("评论被截断: %d → %d tokens", len(tokens), max_tokens)
-        return truncated + "...", True
-    except Exception:
-        # 离线环境降级：按字符估算（中文约 1.5 token/字）
-        max_chars = int(max_tokens * 0.67)  # 保守估算
-        if len(content) <= max_chars:
-            return content, False
-        logger.info("评论被截断（字符估算）: %d → %d 字符", len(content), max_chars)
-        return content[:max_chars] + "...", True
 
+    def __init__(self, settings: dict):
+        filter_cfg = settings.get("filter", {})
+        review_cfg = settings.get("review", {})
 
-def reset_dedup_cache() -> None:
-    """重置重复检测缓存（用于测试或新一天开始时）"""
-    global _dedup_cache
-    _dedup_cache = {}
+        self.max_comment_tokens = filter_cfg.get("max_comment_tokens", 500)
+        self.spam_keywords = filter_cfg.get("spam_keywords", [])
+        self.dedup_window_minutes = filter_cfg.get("dedup_window_minutes", 60)
+        self.auto_skip_patterns = [
+            re.compile(p) for p in review_cfg.get("auto_skip_patterns", [])
+        ]
 
+        # 最近评论记录：{author: last_timestamp}
+        # 用于重复评论检测
+        self._recent_comments: dict[str, float] = {}
 
-def _get_attr(obj: object, name: str, default=None):
-    """从对象或字典中获取属性"""
-    if isinstance(obj, dict):
-        return obj.get(name, default)
-    return getattr(obj, name, default)
+        # Token 编码器（用于超长评论检测）
+        try:
+            self._encoder = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            self._encoder = None
+
+    def _count_tokens(self, text: str) -> int:
+        """计算文本 token 数
+
+        使用 tiktoken cl100k_base 编码器。
+        如果编码器不可用，使用粗略的字符数估算。
+        """
+        if self._encoder:
+            return len(self._encoder.encode(text))
+        # 粗略估算：中文约 1 字 ≈ 1.5 tokens
+        return int(len(text) * 1.5)
+
+    def truncate_if_needed(self, content: str) -> str:
+        """如果评论超长则截断
+
+        实施计划关联：AI-008 任务 2（超长截断阈值）
+
+        超过 max_comment_tokens 的评论会被截断，
+        但不会被跳过（截断后继续处理）。
+
+        Args:
+            content: 评论内容
+
+        Returns:
+            原内容或截断后的内容
+        """
+        token_count = self._count_tokens(content)
+        if token_count <= self.max_comment_tokens:
+            return content
+
+        # 按 token 截断
+        if self._encoder:
+            tokens = self._encoder.encode(content)
+            truncated_tokens = tokens[:self.max_comment_tokens]
+            truncated = self._encoder.decode(truncated_tokens)
+        else:
+            # 粗略截断
+            max_chars = int(self.max_comment_tokens / 1.5)
+            truncated = content[:max_chars]
+
+        logger.info(
+            f"评论超长截断: {token_count} → {self.max_comment_tokens} tokens"
+        )
+        return truncated + "..."
+
+    def should_skip(
+        self, comment: dict, current_time: float | None = None
+    ) -> tuple[bool, str]:
+        """判断是否应跳过该评论
+
+        实施计划关联：AI-008 任务 1
+
+        按以下顺序检查过滤规则：
+        1. 广告/敏感词 → 跳过
+        2. 感谢类评论 → 跳过
+        3. 重复评论 → 跳过
+        4. 超长 → 不跳过（截断由 truncate_if_needed 处理）
+
+        Args:
+            comment: 评论字典 {content, author, created_time}
+            current_time: 当前时间戳（测试用，默认 time.time()）
+
+        Returns:
+            (是否跳过, 原因说明)
+        """
+        content = comment.get("content", "")
+        author = comment.get("author", "")
+        timestamp = current_time or comment.get("created_time", time.time())
+
+        # 1. 广告/敏感词检查
+        for keyword in self.spam_keywords:
+            if keyword in content:
+                logger.info(f"跳过广告评论: keyword={keyword}, author={author}")
+                return True, f"广告关键词: {keyword}"
+
+        # 2. 感谢类评论检查
+        for pattern in self.auto_skip_patterns:
+            if pattern.match(content.strip()):
+                logger.info(f"跳过感谢评论: author={author}")
+                return True, "感谢类评论"
+
+        # 3. 重复评论检查
+        if author in self._recent_comments:
+            last_time = self._recent_comments[author]
+            elapsed_minutes = (timestamp - last_time) / 60
+            if elapsed_minutes < self.dedup_window_minutes:
+                logger.info(
+                    f"跳过重复评论: author={author}, "
+                    f"距上次 {elapsed_minutes:.0f} 分钟"
+                )
+                return True, f"重复评论（{elapsed_minutes:.0f}分钟内）"
+
+        # 记录本次评论时间
+        self._recent_comments[author] = timestamp
+
+        # 4. 通过所有过滤
+        return False, ""
