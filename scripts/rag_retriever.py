@@ -209,6 +209,36 @@ class RAGRetriever:
         return hashlib.md5(file_path.read_bytes()).hexdigest()
 
     @staticmethod
+    def _read_text(file_path: Path) -> str:
+        """读取文本文件，自动检测编码，支持 UTF-8 / GB18030 / Big5 等中文编码。
+
+        检测顺序：
+        1. 尝试 UTF-8（最常见，速度最快）
+        2. 使用 charset-normalizer 自动检测编码（支持 GB18030/GBK/Big5 等）
+        3. 最终回退：以 UTF-8 容错模式读取
+        """
+        raw = file_path.read_bytes()
+
+        # 1. 优先尝试 UTF-8
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+
+        # 2. 使用 charset-normalizer 检测编码（随 requests 一起安装）
+        try:
+            from charset_normalizer import from_bytes
+            result = from_bytes(raw).best()
+            if result is not None:
+                return str(result)
+        except Exception:
+            pass
+
+        # 3. 最终回退：UTF-8 容错模式
+        logger.warning(f"文件编码无法识别，以 UTF-8 容错模式读取: {file_path}")
+        return raw.decode("utf-8", errors="replace")
+
+    @staticmethod
     def _chunk_markdown(content: str, source: str) -> list[dict]:
         """按 Markdown 标题分块
 
@@ -291,7 +321,7 @@ class RAGRetriever:
                 continue
 
             # 分块并 embedding
-            content = md_file.read_text(encoding="utf-8", errors="replace")
+            content = self._read_text(md_file)
             chunks = self._chunk_markdown(content, rel_path)
 
             if chunks:
