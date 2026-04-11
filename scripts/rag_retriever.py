@@ -205,9 +205,8 @@ class RAGRetriever:
 
     @staticmethod
     def _compute_md5(file_path: Path) -> str:
-        """计算文件 MD5 哈希"""
-        content = file_path.read_text(encoding="utf-8")
-        return hashlib.md5(content.encode("utf-8")).hexdigest()
+        """计算文件 MD5 哈希（二进制模式，兼容非 UTF-8 文件）"""
+        return hashlib.md5(file_path.read_bytes()).hexdigest()
 
     @staticmethod
     def _chunk_markdown(content: str, source: str) -> list[dict]:
@@ -292,7 +291,7 @@ class RAGRetriever:
                 continue
 
             # 分块并 embedding
-            content = md_file.read_text(encoding="utf-8")
+            content = md_file.read_text(encoding="utf-8", errors="replace")
             chunks = self._chunk_markdown(content, rel_path)
 
             if chunks:
