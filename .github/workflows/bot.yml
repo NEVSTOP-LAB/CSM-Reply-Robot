@@ -94,8 +94,10 @@ jobs:
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 使用 HuggingFace 镜像站加速模型下载（避免直连被限速）
-          HF_ENDPOINT: "https://hf-mirror.com"
+          # HuggingFace 镜像站端点（可选）；通过仓库 Variables 配置 HF_ENDPOINT
+          # 例如设置为 https://hf-mirror.com 可加速中国大陆的模型下载
+          # 若未配置则使用 HuggingFace 官方端点
+          HF_ENDPOINT: ${{ vars.HF_ENDPOINT }}
         run: python scripts/run_bot.py
 
       # 8. 提交变更（归档文件、seen_ids 等）

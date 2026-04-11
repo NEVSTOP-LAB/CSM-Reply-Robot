@@ -48,6 +48,8 @@ class EmbeddingFunction:
         use_online: 是否使用线上 embedding
         model_name: 本地模型名称
         online_model: 线上模型名称
+        cache_folder: 本地模型缓存目录；未传入时读取 SENTENCE_TRANSFORMERS_HOME
+            环境变量；两者均未设置则由 sentence-transformers 使用默认路径
     """
 
     def __init__(
@@ -63,7 +65,7 @@ class EmbeddingFunction:
         self.model_name = model_name
         self.online_model = online_model
         # 优先使用传入的 cache_folder，其次读取 SENTENCE_TRANSFORMERS_HOME 环境变量
-        # 参考：docs/plan/README.md § AI-005 Embedding 缓存优化
+        # 参考：docs/plan/README.md § AI-005 RAGRetriever — Wiki 索引与检索
         self.cache_folder = cache_folder or os.environ.get("SENTENCE_TRANSFORMERS_HOME")
 
     def _get_local_model(self):
