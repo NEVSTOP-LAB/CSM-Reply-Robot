@@ -97,7 +97,7 @@ jobs:
           # HuggingFace 镜像站端点（可选）；通过仓库 Variables 配置 HF_ENDPOINT
           # 例如设置为 https://hf-mirror.com 可加速中国大陆的模型下载
           # 若未配置则使用 HuggingFace 官方端点
-          HF_ENDPOINT: ${{ vars.HF_ENDPOINT }}
+          HF_ENDPOINT: ${{ vars.HF_ENDPOINT || 'https://huggingface.co' }}
         run: python scripts/run_bot.py
 
       # 8. 提交变更（归档文件、seen_ids 等）

@@ -549,6 +549,20 @@ class BotRunner:
             skip, reason = self.comment_filter.should_skip(comment_dict)
             if skip:
                 logger.info(f"跳过评论 {comment.id}: {reason}")
+                # 即使被过滤，也记录到对话线程以备后期学习
+                if self.thread_manager:
+                    _skip_thread_path = self.thread_manager.get_or_create_thread(
+                        article_id=article["id"],
+                        root_comment=self._make_root_comment_info(comment),
+                        article_meta=article_meta,
+                    )
+                    self.thread_manager.append_turn(
+                        thread_path=_skip_thread_path,
+                        author=comment.author,
+                        content=comment.content,
+                        comment_id=comment.id,
+                        is_followup=comment.parent_id is not None,
+                    )
                 self._seen_ids.add(comment.id)
                 return
 

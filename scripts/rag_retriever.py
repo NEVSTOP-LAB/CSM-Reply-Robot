@@ -81,6 +81,16 @@ class EmbeddingFunction:
             # 若变量存在但为空，则移除它，让库使用默认的 HuggingFace 官方端点。
             if not os.environ.get("HF_ENDPOINT", "").strip():
                 os.environ.pop("HF_ENDPOINT", None)
+                # huggingface_hub 在模块导入时缓存 ENDPOINT 值，仅删除环境变量还不够；
+                # 需要同时重置其内部常量，确保后续下载请求使用正确的官方端点。
+                try:
+                    import huggingface_hub.constants as _hf_constants
+                    if not getattr(_hf_constants, "ENDPOINT", "").startswith(
+                        ("http://", "https://")
+                    ):
+                        _hf_constants.ENDPOINT = "https://huggingface.co"
+                except Exception:
+                    pass
             self._local_model = SentenceTransformer(
                 self.model_name, cache_folder=self.cache_folder
             )

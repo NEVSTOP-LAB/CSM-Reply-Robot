@@ -415,6 +415,35 @@ class TestProcessArticle:
         # 但 seen_ids 应记录
         assert "spam_1" in runner._seen_ids
 
+    def test_filtered_comment_recorded_to_thread(self, runner, bot_root):
+        """被过滤的评论也应归档到对话线程，以供后期学习"""
+        runner.load_config()
+        runner.init_modules()
+
+        runner.zhihu_client = MagicMock()
+        runner.zhihu_client.get_comments.return_value = [
+            _make_comment("spam_2", "加微信了解更多"),
+        ]
+
+        runner.llm_client = MagicMock()
+        runner.llm_client.summarize_article.return_value = ""
+
+        runner.rag_retriever = MagicMock()
+        runner.rag_retriever.retrieve.return_value = []
+
+        runner.thread_manager = MagicMock()
+        runner.thread_manager.get_or_create_thread.return_value = "mock_thread_path"
+
+        runner.process_article(runner.articles[0])
+
+        # LLM 不应被调用（被过滤）
+        runner.llm_client.generate_reply.assert_not_called()
+        # 但线程记录应被调用（归档供学习）
+        runner.thread_manager.append_turn.assert_called_once()
+        call_kwargs = runner.thread_manager.append_turn.call_args[1]
+        assert call_kwargs["author"] == "user"
+        assert call_kwargs["content"] == "加微信了解更多"
+
     def test_human_reply_indexed(self, runner):
         """真人回复应被索引"""
         runner.load_config()
