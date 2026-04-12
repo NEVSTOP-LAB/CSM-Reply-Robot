@@ -929,12 +929,12 @@ class BotRunner:
         try:
             articles_to_process = self._expand_articles()
         except ZhihuAuthError as e:
-            logger.error(f"展开监控目标时认证失败: {e}")
+            logger.error("展开监控目标时认证失败: %s", e)
             if self.alert_manager:
                 self.alert_manager.alert_cookie_expired(e.status_code)
             return
         except ZhihuRateLimitError as e:
-            logger.error(f"展开监控目标时限流: {e}")
+            logger.error("展开监控目标时限流: %s", e)
             if self.alert_manager:
                 self.alert_manager.alert_rate_limited()
             return

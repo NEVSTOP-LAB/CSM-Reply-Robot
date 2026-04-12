@@ -647,7 +647,8 @@ class TestCookieIsolation:
         assert len(result) == 1
         assert result[0]["id"] == "42"
 
-
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_get_user_answers_uses_write_session(self, mock_sleep, client):
         """get_user_answers 应使用 write_session（含 Cookie）— 该接口需要认证"""
         resp = _make_response(200, {
             "data": [],

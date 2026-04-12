@@ -530,7 +530,7 @@ class TestExceptionHandling:
 
         runner.alert_manager.alert_expansion_failed.assert_called_once()
         call_kwargs = runner.alert_manager.alert_expansion_failed.call_args
-        assert call_kwargs[1]["configured_count"] == 1 or call_kwargs[0][0] == 1
+        assert call_kwargs.kwargs.get("configured_count", call_kwargs.args[0] if call_kwargs.args else None) == 1
 
     def test_budget_exceeded_triggers_alert(self, runner, bot_root):
         """BudgetExceededError 应触发告警并终止"""
