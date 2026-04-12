@@ -463,14 +463,18 @@ class ZhihuClient:
         获取专栏下所有文章列表
 
         用于展开 type="column" 的监控目标，自动获取专栏内全部文章。
+        使用 /items 端点（比旧版 /articles 端点更稳定）。
 
         Args:
-            column_id: 专栏 ID（如 "csm-practice"）
+            column_id: 专栏 ID，必须与知乎 URL 路径中的 ID 一致
+                       （如 URL 为 /column/c_1681072169147342848，则 id = "c_1681072169147342848"）
 
         Returns:
             文章字典列表，每项含 id/title/url/type
         """
-        url = f"{self.API_READ_BASE}/columns/{column_id}/articles"
+        # 使用 /items 端点（/articles 端点已不稳定，经测试返回 404）
+        # 参考: https://www.zhihu.com/api/v4/columns/{id}/items
+        url = f"{self.API_READ_BASE}/columns/{column_id}/items"
         all_articles: list[dict] = []
         offset = 0
 
@@ -485,10 +489,16 @@ class ZhihuClient:
 
             items = data.get("data", [])
             for item in items:
+                # /items 接口返回格式: {type: "article", content: {...}}
+                # 仅处理文章类型，忽略 pin 等其他类型
+                if item.get("type") != "article":
+                    continue
+                content = item.get("content", {})
+                article_id = str(content.get("id", ""))
                 all_articles.append({
-                    "id": str(item.get("id", "")),
-                    "title": item.get("title", ""),
-                    "url": item.get("url", f"https://zhuanlan.zhihu.com/p/{item.get('id', '')}"),
+                    "id": article_id,
+                    "title": content.get("title", ""),
+                    "url": content.get("url", f"https://zhuanlan.zhihu.com/p/{article_id}"),
                     "type": "article",
                 })
 
@@ -505,9 +515,10 @@ class ZhihuClient:
         获取某用户的全部回答列表
 
         用于展开 type="user_answers" 的监控目标。
+        该接口需要登录认证，使用 write_session（含 Cookie）。
 
         Args:
-            user_id: 用户 URL ID（如 "nevstop"）
+            user_id: 用户 URL ID（如 "supernevstop"）
 
         Returns:
             回答字典列表，每项含 id/title/url/type
@@ -522,7 +533,9 @@ class ZhihuClient:
             time.sleep(delay)
 
             logger.debug("请求用户回答: %s offset=%d", url, offset)
-            response = self._request_with_retry("GET", url, params=params, session=self.read_session)
+            # 该接口需要认证，使用 write_session（含 Cookie）
+            # /api/v4/members/{user}/answers 在未登录时返回 401
+            response = self._request_with_retry("GET", url, params=params, session=self.write_session)
             data = response.json()
 
             items = data.get("data", [])

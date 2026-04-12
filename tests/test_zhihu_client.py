@@ -504,7 +504,7 @@ class TestGetQuestionAnswers:
             "paging": {"is_end": True},
         })
 
-        with patch.object(client.read_session, "request", return_value=resp):
+        with patch.object(client.write_session, "request", return_value=resp):
             result = client.get_user_answers("some_user")
 
         assert result[0]["type"] == "answer"
@@ -562,26 +562,69 @@ class TestCookieIsolation:
 
     @patch("scripts.zhihu_client.time.sleep")
     def test_get_column_articles_uses_read_session(self, mock_sleep, client):
-        """get_column_articles 应使用 read_session（无 Cookie）"""
+        """get_column_articles 应使用 read_session（无 Cookie）— 专栏文章为公开内容"""
         resp = _make_response(200, {
             "data": [],
             "paging": {"is_end": True},
         })
 
         with patch.object(client.read_session, "request", return_value=resp) as mock_req:
-            client.get_column_articles("some-column")
+            client.get_column_articles("c_1234567890")
 
         mock_req.assert_called_once()
 
     @patch("scripts.zhihu_client.time.sleep")
-    def test_get_user_answers_uses_read_session(self, mock_sleep, client):
-        """get_user_answers 应使用 read_session（无 Cookie）"""
+    def test_get_column_articles_uses_items_endpoint(self, mock_sleep, client):
+        """get_column_articles 应调用 /columns/{id}/items 端点（/articles 已返回 404）"""
         resp = _make_response(200, {
             "data": [],
             "paging": {"is_end": True},
         })
 
         with patch.object(client.read_session, "request", return_value=resp) as mock_req:
+            client.get_column_articles("c_1234567890")
+
+        call_args = mock_req.call_args
+        assert "columns/c_1234567890/items" in str(call_args)
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_get_column_articles_parses_items_format(self, mock_sleep, client):
+        """get_column_articles 应正确解析 /items 返回的 {type, content} 格式"""
+        resp = _make_response(200, {
+            "data": [
+                {
+                    "type": "article",
+                    "content": {
+                        "id": 123456,
+                        "title": "测试文章",
+                        "url": "https://zhuanlan.zhihu.com/p/123456",
+                    },
+                },
+                {
+                    "type": "pin",  # 非文章类型，应被忽略
+                    "content": {"id": 999},
+                },
+            ],
+            "paging": {"is_end": True},
+        })
+
+        with patch.object(client.read_session, "request", return_value=resp):
+            result = client.get_column_articles("c_1234567890")
+
+        assert len(result) == 1
+        assert result[0]["id"] == "123456"
+        assert result[0]["title"] == "测试文章"
+        assert result[0]["type"] == "article"
+
+    @patch("scripts.zhihu_client.time.sleep")
+    def test_get_user_answers_uses_write_session(self, mock_sleep, client):
+        """get_user_answers 应使用 write_session（含 Cookie）— 该接口需要认证"""
+        resp = _make_response(200, {
+            "data": [],
+            "paging": {"is_end": True},
+        })
+
+        with patch.object(client.write_session, "request", return_value=resp) as mock_req:
             client.get_user_answers("some_user")
 
         mock_req.assert_called_once()
