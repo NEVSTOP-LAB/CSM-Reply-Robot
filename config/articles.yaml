@@ -13,13 +13,14 @@
 articles:
 
   # 整个专栏（自动监控专栏内全部文章）
-  - id: "csm-column"
+  # id 必须与知乎专栏 URL 路径一致，如 /column/c_1681072169147342848 对应 id = c_1681072169147342848
+  - id: "c_1681072169147342848"
     title: "可通讯状态机(CSM)框架"
     url: "https://www.zhihu.com/column/c_1681072169147342848"
     type: "column"
 
   # 整个专栏（自动监控专栏内全部文章）
-  - id: "NEVSTOP-LAB"
+  - id: "c_1770421455375126528"
     title: "NEVSTOP-LAB"
     url: "https://www.zhihu.com/column/c_1770421455375126528"
     type: "column"
