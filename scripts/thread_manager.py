@@ -241,8 +241,15 @@ class ThreadManager:
             if not section.startswith("###"):
                 continue
 
-            # 判断是 bot（assistant）还是 user（含真人回复和用户评论）
-            is_bot = "Bot 回复" in section or "机器人回复" in section
+            # 判断是 bot/assistant（Bot 回复或作者真人回复）还是 user（用户评论/追问）
+            # 作者的真人回复（"真人回复（作者本人）⭐"）在对话上下文中属于"回答方"，
+            # 与 Bot 回复一样映射为 assistant role，这样 question 抽取时不会把
+            # 历史中的真人回复误当成用户提问。
+            is_bot = (
+                "Bot 回复" in section
+                or "机器人回复" in section
+                or "真人回复" in section
+            )
 
             # 提取内容（去掉标题行）
             lines = section.split("\n", 1)

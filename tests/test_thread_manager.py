@@ -310,17 +310,17 @@ class TestBuildContextMessages:
         assert messages[0]["role"] == "user"
         assert messages[1]["role"] == "assistant"
 
-    def test_human_reply_is_user_role(
+    def test_human_reply_is_assistant_role(
         self, manager, sample_comment, sample_article_meta
     ):
-        """真人回复应为 user role"""
+        """真人回复应为 assistant role（与 Bot 回复一样属于"回答方"）"""
         path = manager.get_or_create_thread(
             "98765432", sample_comment, sample_article_meta
         )
         manager.append_turn(path, "作者", "真人回复内容", is_human=True)
 
         messages = manager.build_context_messages(path)
-        assert messages[0]["role"] == "user"
+        assert messages[0]["role"] == "assistant"
 
     def test_max_turns_truncation(
         self, manager, sample_comment, sample_article_meta
