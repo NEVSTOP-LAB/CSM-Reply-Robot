@@ -1,4 +1,4 @@
-# csm_qa
+# CSM-QA-Robot
 
 > 通用 RAG 问答 Python 库 —— 基于 CSM Wiki / LabVIEW 知识库，封装 LLM 调用与向量检索，对外仅暴露一个简洁的 `CSM_QA` 类。
 
