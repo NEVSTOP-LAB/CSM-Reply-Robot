@@ -179,7 +179,8 @@ def check_and_update_wiki(
 
     logger.info("检查 wiki 远程更新: %s", wiki_src.url)
     latest = fetch_latest_commit_id(wiki_src.url, branch=branch, timeout=timeout)
-    logger.info("远程最新 commit: %s  本地已有: %s", latest[:12], wiki_src.commit_id[:12] if wiki_src.commit_id else "(空)")
+    local_short = wiki_src.commit_id[:12] if wiki_src.commit_id else "(空)"
+    logger.info("远程最新 commit: %s  本地已有: %s", latest[:12], local_short)
 
     if not force_sync and latest == wiki_src.commit_id:
         logger.info("wiki 已是最新，跳过拉取与 RAG 更新")
