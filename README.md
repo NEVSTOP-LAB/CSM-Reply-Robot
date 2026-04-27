@@ -1,6 +1,6 @@
 # csm_qa
 
-> 通用 RAG 问答 Python 库 —— 基于 CSM Wiki / LabVIEW 知识库，封装 LLM 调用与向量检索，对外仅暴露一个简洁的 `CSMQa` 类。
+> 通用 RAG 问答 Python 库 —— 基于 CSM Wiki / LabVIEW 知识库，封装 LLM 调用与向量检索，对外仅暴露一个简洁的 `CSM_QA` 类。
 
 本仓库经过一次大胆重构，从"知乎评论批处理机器人"演进为可被任意 Python 项目 `import` 使用的 **RAG 问答 SDK**。原有的 inbox/pending 文件流、知乎客户端、定时 Workflow 等均已移除。
 
@@ -21,9 +21,9 @@ pip install -r requirements.txt
 ## 60 秒上手
 
 ```python
-from csm_qa import CSMQa
+from csm_qa import CSM_QA
 
-qa = CSMQa(api_key="sk-deepseek-xxx")           # 默认 provider=deepseek
+qa = CSM_QA(api_key="sk-deepseek-xxx")           # 默认 provider=deepseek
 answer = qa.ask("CSM 框架中的状态机如何切换？")
 print(answer)
 ```
@@ -31,9 +31,9 @@ print(answer)
 带历史对话：
 
 ```python
-from csm_qa import CSMQa, Message
+from csm_qa import CSM_QA, Message
 
-qa = CSMQa(api_key="sk-xxx")
+qa = CSM_QA(api_key="sk-xxx")
 history = [
     Message(role="user", content="CSM 是什么？"),
     Message(role="assistant", content="CSM 是 Communicable State Machine ..."),
@@ -56,7 +56,7 @@ print(result.prompt_messages)  # 实际发往 LLM 的 messages（调试用）
 ## API 参数
 
 ```python
-CSMQa(
+CSM_QA(
     api_key,                                # 必填
     *,
     provider="deepseek",                    # "deepseek" 或 "openai_compatible"
@@ -91,7 +91,7 @@ CSMQa(
 示例：使用 OpenAI 官方
 
 ```python
-qa = CSMQa(
+qa = CSM_QA(
     api_key="sk-xxx",
     provider="openai_compatible",
     base_url="https://api.openai.com/v1",
@@ -102,7 +102,7 @@ qa = CSMQa(
 ### 从环境变量构造
 
 ```python
-qa = CSMQa.from_env()
+qa = CSM_QA.from_env()
 # 兼容旧变量：LLM_API_KEY / LLM_MODEL / LLM_BASE_URL
 # 新变量：CSM_QA_API_KEY / CSM_QA_PROVIDER / CSM_QA_MODEL / CSM_QA_BASE_URL
 ```
@@ -113,7 +113,7 @@ qa = CSMQa.from_env()
 
 把任意 Markdown 文档放入 `csm-wiki/` 目录即可（支持子目录、UTF-8 / GBK / Big5 自动识别）。
 
-- 首次构造 `CSMQa` 时若向量库为空，会自动调用 `sync_wiki()`。
+- 首次构造 `CSM_QA` 时若向量库为空，会自动调用 `sync_wiki()`。
 - 之后可通过命令行手动增量同步：
 
 ```bash
@@ -137,7 +137,7 @@ qa.sync_wiki(force=False)
 如需替换为通用领域 / 英文 / 自定义风格，传入 `system_prompt=` 即可：
 
 ```python
-qa = CSMQa(api_key="sk", system_prompt="You are a helpful general-purpose assistant.")
+qa = CSM_QA(api_key="sk", system_prompt="You are a helpful general-purpose assistant.")
 ```
 
 ---
@@ -147,8 +147,8 @@ qa = CSMQa(api_key="sk", system_prompt="You are a helpful general-purpose assist
 ```
 .
 ├── csm_qa/                 # SDK 主包（pip install -e . 后可 import）
-│   ├── __init__.py         # 导出 CSMQa / Message / AnswerResult
-│   ├── api.py              # CSMQa 主类
+│   ├── __init__.py         # 导出 CSM_QA / Message / AnswerResult
+│   ├── api.py              # CSM_QA 主类
 │   ├── llm.py              # OpenAI 兼容 LLM 客户端
 │   ├── rag.py              # ChromaDB + Embedding 检索器
 │   ├── providers.py        # provider 预设（deepseek / openai_compatible）

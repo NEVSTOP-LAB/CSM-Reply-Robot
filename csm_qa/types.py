@@ -36,7 +36,7 @@ class Usage:
 
 @dataclass
 class AnswerResult:
-    """:meth:`CSMQa.ask_detailed` 的返回类型。
+    """:meth:`CSM_QA.ask_detailed` 的返回类型。
 
     Attributes:
         answer: 模型生成的回答文本。

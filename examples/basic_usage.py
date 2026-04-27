@@ -7,11 +7,11 @@
 
 from __future__ import annotations
 
-from csm_qa import CSMQa
+from csm_qa import CSM_QA
 
 
 def main() -> None:
-    qa = CSMQa.from_env()  # 自动读取 LLM_API_KEY
+    qa = CSM_QA.from_env()  # 自动读取 LLM_API_KEY
     answer = qa.ask("CSM 框架中的状态机是怎么切换的？")
     print(answer)
 

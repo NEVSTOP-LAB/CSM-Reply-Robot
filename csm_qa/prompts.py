@@ -4,7 +4,7 @@
 """
 
 # 默认 system prompt：CSM/LabVIEW 场景 + RAG。
-# 调用方可通过 ``CSMQa(system_prompt=...)`` 完全覆盖。
+# 调用方可通过 ``CSM_QA(system_prompt=...)`` 完全覆盖。
 DEFAULT_SYSTEM_PROMPT = """\
 你是 CSM（Communicable State Machine，通信状态机）框架与 LabVIEW 的资深技术专家。
 你的任务是基于「参考资料」准确、简洁地回答用户的问题。

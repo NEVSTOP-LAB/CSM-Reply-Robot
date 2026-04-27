@@ -1,10 +1,10 @@
-"""``CSMQa`` 主入口类。
+"""``CSM_QA`` 主入口类。
 
 外部使用示例::
 
-    from csm_qa import CSMQa, Message
+    from csm_qa import CSM_QA, Message
 
-    qa = CSMQa(api_key="sk-xxx")               # 默认 deepseek + 本地 embedding
+    qa = CSM_QA(api_key="sk-xxx")               # 默认 deepseek + 本地 embedding
     answer = qa.ask("CSM 的状态机如何切换？")
 
     history = [
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 HistoryItem = Union[Message, dict]
 
 
-class CSMQa:
+class CSM_QA:
     """RAG 问答主类。
 
     构造后即可 :meth:`ask` 单轮问答或 :meth:`ask_detailed` 带元信息问答。
@@ -126,7 +126,7 @@ class CSMQa:
     # ─── 工厂方法 ────────────────────────────────────────────────
 
     @classmethod
-    def from_env(cls, **overrides) -> "CSMQa":
+    def from_env(cls, **overrides) -> "CSM_QA":
         """从环境变量构造，便于复用旧的 ``LLM_API_KEY`` 等约定。
 
         识别的环境变量：

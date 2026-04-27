@@ -1,4 +1,4 @@
-"""``CSMQa`` 主类的端到端测试（mock LLM + fake embedding）。"""
+"""``CSM_QA`` 主类的端到端测试（mock LLM + fake embedding）。"""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from csm_qa import AnswerResult, CSMQa, Message
+from csm_qa import AnswerResult, CSM_QA, Message
 from csm_qa.types import Usage
 from tests.test_rag import FakeEmbedding
 
 
 @pytest.fixture
 def qa(tmp_dir: Path):
-    """构造一个 CSMQa 实例，LLM 与 embedding 全部被替换为 mock。"""
+    """构造一个 CSM_QA 实例，LLM 与 embedding 全部被替换为 mock。"""
     wiki = tmp_dir / "wiki"
     store = tmp_dir / "store"
     wiki.mkdir()
@@ -29,7 +29,7 @@ def qa(tmp_dir: Path):
         mock_llm.chat.return_value = ("回答内容", Usage(10, 5, 15))
         mock_llm_cls.return_value = mock_llm
 
-        instance = CSMQa(
+        instance = CSM_QA(
             api_key="sk-test",
             wiki_dir=wiki,
             vector_store_dir=store,
@@ -41,14 +41,14 @@ def qa(tmp_dir: Path):
 
 def test_init_requires_api_key():
     with pytest.raises(ValueError):
-        CSMQa(api_key="")
+        CSM_QA(api_key="")
 
 
 def test_init_resolves_deepseek_defaults(tmp_dir):
     with patch("csm_qa.api.LLMClient") as mock_llm_cls, \
             patch("csm_qa.api.EmbeddingFunction", return_value=FakeEmbedding()):
         mock_llm_cls.return_value = MagicMock()
-        qa = CSMQa(
+        qa = CSM_QA(
             api_key="sk",
             wiki_dir=tmp_dir / "wiki",
             vector_store_dir=tmp_dir / "store",
@@ -61,7 +61,7 @@ def test_init_resolves_deepseek_defaults(tmp_dir):
 
 def test_openai_compatible_requires_base_and_model(tmp_dir):
     with pytest.raises(ValueError):
-        CSMQa(
+        CSM_QA(
             api_key="sk",
             provider="openai_compatible",
             wiki_dir=tmp_dir / "wiki",
@@ -74,7 +74,7 @@ def test_openai_compatible_works_with_overrides(tmp_dir):
     with patch("csm_qa.api.LLMClient") as mock_llm_cls, \
             patch("csm_qa.api.EmbeddingFunction", return_value=FakeEmbedding()):
         mock_llm_cls.return_value = MagicMock()
-        qa = CSMQa(
+        qa = CSM_QA(
             api_key="sk",
             provider="openai_compatible",
             base_url="https://api.moonshot.cn/v1",
@@ -157,7 +157,7 @@ def test_custom_system_prompt_overrides_default(tmp_dir):
         mock_llm.chat.return_value = ("ok", Usage())
         mock_llm_cls.return_value = mock_llm
 
-        qa = CSMQa(
+        qa = CSM_QA(
             api_key="sk",
             wiki_dir=tmp_dir / "wiki",
             vector_store_dir=tmp_dir / "store",
@@ -188,7 +188,7 @@ def test_from_env_reads_legacy_env_vars(monkeypatch, tmp_dir):
     with patch("csm_qa.api.LLMClient") as mock_llm_cls, \
             patch("csm_qa.api.EmbeddingFunction", return_value=FakeEmbedding()):
         mock_llm_cls.return_value = MagicMock()
-        qa = CSMQa.from_env(
+        qa = CSM_QA.from_env(
             wiki_dir=tmp_dir / "wiki",
             vector_store_dir=tmp_dir / "store",
             auto_sync_wiki=False,

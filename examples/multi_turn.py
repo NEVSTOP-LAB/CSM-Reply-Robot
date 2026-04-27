@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from csm_qa import CSMQa, Message
+from csm_qa import CSM_QA, Message
 
 
 def main() -> None:
-    qa = CSMQa(
+    qa = CSM_QA(
         api_key="sk-xxx",                    # 替换为你的 key
         provider="deepseek",                 # 或 "openai_compatible"
         model="deepseek-chat",
