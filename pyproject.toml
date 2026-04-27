@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csm_qa"
+version = "0.1.0"
+description = "RAG-powered Q&A library for the CSM (Communicable State Machine) / LabVIEW knowledge base."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "NEVSTOP-LAB" }]
+keywords = ["rag", "llm", "deepseek", "csm", "labview", "qa"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "openai>=1.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "charset-normalizer>=3.0.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-mock>=3.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/NEVSTOP-LAB/CSM-Reply-Robot"
+Issues = "https://github.com/NEVSTOP-LAB/CSM-Reply-Robot/issues"
+
+[tool.setuptools.packages.find]
+include = ["csm_qa*"]
+exclude = ["tests*", "examples*"]
