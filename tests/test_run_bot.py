@@ -279,7 +279,7 @@ class TestExceptionHandling:
     """验证异常场景"""
 
     def test_budget_exceeded_triggers_alert(self, runner, bot_root):
-        """BudgetExceededError 应触发告警并终止"""
+        """BudgetExceededError 应触发告警并终止（通过 run_inbox）"""
         runner.load_config()
         runner.init_modules()
 
@@ -297,14 +297,27 @@ class TestExceptionHandling:
         runner.alert_manager = MagicMock()
 
         runner.load_seen_ids()
-        runner.run_inbox = lambda: runner.process_messages(
-            [_make_message("new_1", "测试")],
+
+        # 准备一条 inbox 消息
+        inbox_dir = bot_root / "data" / "inbox"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+        msg_data = {
+            "id": "budget_test_1",
+            "content": "触发预算超限的消息",
+            "author": "user",
+            "created_time": 1712000000,
+            "is_author_reply": False,
+        }
+        with open(inbox_dir / "msg1.json", "w") as f:
+            json.dump(msg_data, f)
+
+        # run_inbox 应捕获 BudgetExceededError 并触发告警，不向上传播
+        runner.run_inbox()
+
+        runner.alert_manager.alert_budget_exceeded.assert_called_once_with(
+            cost=0.55,
+            budget=runner.settings["bot"]["llm_budget_usd_per_day"],
         )
-        try:
-            runner.process_messages([_make_message("new_1", "测试")])
-        except BudgetExceededError:
-            pass
-        # BudgetExceededError 应向上传播（由 run_inbox 处理）
 
 
 # ===== daily_limit 测试 =====

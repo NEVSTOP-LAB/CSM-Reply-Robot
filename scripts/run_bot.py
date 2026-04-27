@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -353,8 +354,9 @@ class BotRunner:
         pending_dir = self.root / "data" / "pending"
         pending_dir.mkdir(parents=True, exist_ok=True)
 
-        topic_id = topic.get("id", "inbox")
-        filename = f"{topic_id}_{comment_id}.md"
+        topic_id = re.sub(r"[^\w\-]", "_", topic.get("id", "inbox"))
+        safe_comment_id = re.sub(r"[^\w\-]", "_", str(comment_id))
+        filename = f"{topic_id}_{safe_comment_id}.md"
         filepath = pending_dir / filename
 
         # 使用 yaml.dump 生成 frontmatter，避免特殊字符导致 YAML 解析错误
@@ -649,14 +651,13 @@ class BotRunner:
         """
         logger.info(f"检测到专家回复: message_id={message.id}")
 
+        topic_id = topic.get("id", "inbox")
+
         if self.thread_manager:
             thread_path = self.thread_manager.get_or_create_thread(
-                article_id=topic["id"],
+                article_id=topic_id,
                 root_comment=self._make_root_comment_info(message),
-                article_meta={
-                    "title": topic.get("title", ""),
-                    "url": topic.get("url", ""),
-                },
+                article_meta=topic_meta,
             )
 
             # 从历史中找最近一条 role=="user" 的内容作为 question
@@ -687,7 +688,7 @@ class BotRunner:
             self.rag_retriever.index_human_reply(
                 question=question_for_rag,
                 reply=message.content,
-                article_id=topic["id"],
+                article_id=topic_id,
                 thread_id=self._get_thread_root_id(message),
             )
 
@@ -708,9 +709,10 @@ class BotRunner:
         )
 
         # 记录到对话线程
+        topic_id = topic.get("id", "inbox")
         if self.thread_manager:
             thread_path = self.thread_manager.get_or_create_thread(
-                article_id=topic["id"],
+                article_id=topic_id,
                 root_comment=self._make_root_comment_info(message),
                 article_meta=topic_meta,
             )
@@ -726,7 +728,7 @@ class BotRunner:
             self.rag_retriever.index_human_reply(
                 question=message.content,
                 reply=message.content,
-                article_id=topic["id"],
+                article_id=topic_id,
                 thread_id=self._get_thread_root_id(message),
             )
 
@@ -749,12 +751,13 @@ class BotRunner:
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                raw_parent = data.get("parent_id")
                 message = Message(
                     id=str(data["id"]),
                     content=str(data["content"]),
                     author=str(data.get("author", "anonymous")),
                     created_time=int(data.get("created_time", 0)),
-                    parent_id=data.get("parent_id"),
+                    parent_id=str(raw_parent) if raw_parent is not None else None,
                     is_author_reply=bool(data.get("is_author_reply", False)),
                 )
                 messages.append(message)
