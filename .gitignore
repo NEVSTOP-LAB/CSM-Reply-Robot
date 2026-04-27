@@ -1,16 +1,6 @@
-# AI-002: .gitignore
-# 参考: docs/plan/README.md § 三、目录结构设计
-
-# 向量库（通过 Actions Cache 持久化，不提交到 git）
+# 向量库（运行时生成；按需通过 Actions Cache 或外部存储持久化）
+.csm_qa/
 data/vector_store/
-data/reply_index/
-
-# 运行时数据（不提交到 git）
-archive/articles/
-archive/rejected/
-data/seen_ids.json
-data/comment_thread_map.json
-data/dedup_cache.json
 
 # 环境变量
 .env
@@ -23,6 +13,11 @@ __pycache__/
 dist/
 build/
 .eggs/
+.pytest_cache/
+
+# 安装相关
+*.egg
+pip-wheel-metadata/
 
 # IDE
 .vscode/

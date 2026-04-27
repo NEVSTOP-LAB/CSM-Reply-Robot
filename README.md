@@ -1,204 +1,183 @@
-# CSM-Reply-Robot
+# csm_qa
 
-> CSM（Communicable State Machine，通信状态机）/LabVIEW 问答自动回复机器人 —— 基于 RAG + DeepSeek LLM，运行于 GitHub Actions
+> 通用 RAG 问答 Python 库 —— 基于 CSM Wiki / LabVIEW 知识库，封装 LLM 调用与向量检索，对外仅暴露一个简洁的 `CSMQa` 类。
 
----
-
-## 功能概览
-
-- 📥 读取 `data/inbox/` 目录中的待处理消息（平台无关，由外部工具/脚本写入）
-- 🔍 RAG 检索 CSM Wiki 知识库，结合上下文生成专业回复
-- 🤖 调用 DeepSeek（或其他 OpenAI 兼容模型）生成回复，回复统一加 `[rob]:` 前缀标识自动回复
-- 📝 所有 AI 回复写入 `data/pending/` 供人工审核后发布
-- 👤 **白名单用户过滤**：维护者等白名单用户的消息仅记录，不触发 AI 处理，节省 token
-- 📚 **回复自学习**：所有回复内容（bot 回复 + 人工回复）自动加入 RAG 索引，持续提升回复质量
-- 🚨 异常自动告警：预算超限、连续失败 → 创建 GitHub Issue
-- 💰 每日 LLM 费用追踪与预算限制
-- 📊 追问上下文管理（多轮对话线程）
+本仓库经过一次大胆重构，从"知乎评论批处理机器人"演进为可被任意 Python 项目 `import` 使用的 **RAG 问答 SDK**。原有的 inbox/pending 文件流、知乎客户端、定时 Workflow 等均已移除。
 
 ---
 
-## 消息输入格式
-
-机器人从 `data/inbox/` 目录读取 JSON 文件，每个文件代表一条待处理消息：
-
-```json
-{
-  "id": "msg-001",
-  "content": "CSM 框架如何处理多状态并发？",
-  "author": "username",
-  "created_time": 1700000000,
-  "parent_id": null,
-  "is_author_reply": false
-}
-```
-
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `id` | string | 消息唯一 ID |
-| `content` | string | 消息正文 |
-| `author` | string | 发送者用户名 |
-| `created_time` | int | Unix 时间戳（秒） |
-| `parent_id` | string \| null | 父消息 ID（追问时填写） |
-| `is_author_reply` | bool | 是否为专家/维护者回复（仅索引，不生成 AI 回复） |
-
----
-
-## 配置
-
-### 1. 准备 CSM Wiki 知识库
-
-`csm-wiki/` 目录用于存放**本地补充文档**（可选）。主要知识库来源是 [CSM Wiki](https://nevstop-lab.github.io/CSM-Wiki/)，由 `sync-wiki.yml` 工作流自动从 [NEVSTOP-LAB/CSM-Wiki](https://github.com/NEVSTOP-LAB/CSM-Wiki) 拉取并索引。
-
-本地 `csm-wiki/` 目录可用于放置私有补充文档：
-
-```
-csm-wiki/
-├── 私有补充文档.md
-└── ...
-```
-
-### 2. 配置 GitHub Secrets
-
-在仓库 **Settings → Secrets and variables → Actions** 中添加以下 Secrets：
-
-| Secret 名称 | 必填 | 说明 |
-|---|---|---|
-| `LLM_API_KEY` | ✅ | DeepSeek 或 OpenAI 兼容服务的 API Key |
-| `LLM_BASE_URL` | ❌ | LLM API 端点，默认 `https://api.deepseek.com` |
-| `LLM_MODEL` | ❌ | 模型名称，默认 `deepseek-chat` |
-| `GITHUB_TOKEN` | 自动 | GitHub Actions 自动注入，用于告警创建 Issue |
-
-> **说明**：所有敏感信息均通过 GitHub Secrets 传入，不在代码或配置文件中明文保存。
-
-### 3. 调整运行参数（可选）
-
-编辑 `config/settings.yaml`：
-
-```yaml
-bot:
-  max_new_comments_per_run: 20     # 每次最多处理条数
-  max_new_comments_per_day: 100    # 每日上限
-  llm_budget_usd_per_day: 0.50    # 每日 LLM 费用预算（超出后停止并告警）
-  reply_prefix: "[rob]"            # 回复前缀，让用户知道这是自动回复
-  whitelist_users:                 # 白名单用户（维护者等），仅记录不做 AI 处理
-    - "your-username"
-
-filter:
-  spam_keywords:                   # 广告关键词（命中则跳过）
-    - "加微信"
-    - "私信"
-```
-
----
-
-## GitHub Actions 配置
-
-仓库内置两个 Workflow，Fork 后即可直接使用：
-
-| Workflow | 触发方式 | 功能 |
-|---|---|---|
-| `bot.yml` | **每15分钟** + 手动触发 | 读取 inbox → AI 生成回复 → 写入 pending/ |
-| `sync-wiki.yml` | 每周日 + 手动触发 | 从 [NEVSTOP-LAB/CSM-Wiki](https://github.com/NEVSTOP-LAB/CSM-Wiki) 拉取最新文档并增量同步向量库 |
-
-### bot.yml 所需 Secrets
-
-```yaml
-env:
-  LLM_API_KEY:    ${{ secrets.LLM_API_KEY }}      # LLM API Key（必填）
-  LLM_BASE_URL:   ${{ secrets.LLM_BASE_URL }}     # LLM 端点（可选）
-  LLM_MODEL:      ${{ secrets.LLM_MODEL }}        # 模型名称（可选）
-  GITHUB_TOKEN:   ${{ secrets.GITHUB_TOKEN }}     # 自动注入，用于告警
-```
-
-### 启用 / 停用 Workflow
-
-- 启用：仓库页面 → **Actions** → 选择 Workflow → **Enable workflow**
-- 手动触发：Actions → 选择 Workflow → **Run workflow**
-- 停用：Actions → 选择 Workflow → **Disable workflow**
-
----
-
-## 目录结构
-
-```
-CSM-Reply-Robot/
-├── .github/workflows/
-│   ├── bot.yml              # 主 Workflow（每15分钟定时回复）
-│   └── sync-wiki.yml        # Wiki 同步 Workflow
-├── config/
-│   └── settings.yaml        # 全局运行参数
-├── csm-wiki/                # 本地补充文档（可选，主库由 sync-wiki.yml 自动从远程拉取）
-├── data/
-│   ├── inbox/               # 待处理消息（JSON，由外部工具写入）
-│   ├── pending/             # AI 生成的回复（等待人工审核）
-│   ├── done/                # 已审核通过的回复
-│   ├── vector_store/        # ChromaDB 向量库（自动生成）
-│   └── reply_index/         # 历史回复向量索引
-├── archive/                 # 对话线程归档（自动生成）
-├── scripts/
-│   ├── run_bot.py           # 主入口
-│   ├── wiki_sync.py         # Wiki 同步 CLI
-│   ├── rag_retriever.py     # RAG 检索模块
-│   ├── llm_client.py        # LLM 调用模块
-│   ├── thread_manager.py    # 多轮对话管理
-│   ├── comment_filter.py    # 消息前置过滤
-│   ├── alerting.py          # GitHub Issue 告警
-│   ├── cost_tracker.py      # 费用追踪
-│   └── archiver.py          # 归档管理
-└── tests/                   # 单元测试
-```
-
----
-
-## 回复处理流程
-
-```
-data/inbox/ 中的消息
-  │
-  ▼
-白名单检查 ──→ 白名单用户 ──→ 仅记录到线程 + RAG（不做 AI 处理）
-  │
-  ▼
-规则过滤（垃圾/广告/重复）
-  │
-  ▼
-RAG 检索知识库 + LLM 生成回复
-  │  回复统一加 [rob]: 前缀
-  │  回复内容自动加入 RAG 学习
-  ▼
-写入 data/pending/ 等待人工审核 📝
-```
-
-**审核 pending/ 中的回复**：
-
-1. 打开 `data/pending/` 目录中对应的 `.md` 文件，确认回复内容
-2. 调用 `archiver.approve_pending(filepath)` 将文件移至 `data/done/`（或手动移动）
-
----
-
-## 告警机制
-
-以下异常会自动在 GitHub 仓库创建 Issue（标签 `bot-alert`）：
-
-| 告警类型 | 触发条件 |
-|---|---|
-| 连续失败 | 连续失败 ≥ 3 次（可配置） |
-| 预算超限 | 当日 LLM 费用 > 预算上限 |
-
----
-
-## 开发与测试
+## 安装
 
 ```bash
-# 安装依赖
+pip install -e .
+# 或
 pip install -r requirements.txt
-
-# 运行全部测试
-python -m pytest tests/ -v
-
-# 运行特定模块测试
-python -m pytest tests/test_run_bot.py -v
-python -m pytest tests/test_llm_client.py -v
 ```
 
+依赖：`openai>=1.0`、`chromadb>=0.4`、`sentence-transformers>=2.2`、`charset-normalizer>=3.0`。
+
+---
+
+## 60 秒上手
+
+```python
+from csm_qa import CSMQa
+
+qa = CSMQa(api_key="sk-deepseek-xxx")           # 默认 provider=deepseek
+answer = qa.ask("CSM 框架中的状态机如何切换？")
+print(answer)
+```
+
+带历史对话：
+
+```python
+from csm_qa import CSMQa, Message
+
+qa = CSMQa(api_key="sk-xxx")
+history = [
+    Message(role="user", content="CSM 是什么？"),
+    Message(role="assistant", content="CSM 是 Communicable State Machine ..."),
+]
+answer = qa.ask("那它和 JKI SM 的区别？", history=history)
+```
+
+需要更多元信息？
+
+```python
+result = qa.ask_detailed("CSM 状态机如何切换？", history=history)
+print(result.answer)         # 文本
+print(result.contexts)       # 命中的 RAG 片段
+print(result.usage)          # token 用量
+print(result.prompt_messages)  # 实际发往 LLM 的 messages（调试用）
+```
+
+---
+
+## API 参数
+
+```python
+CSMQa(
+    api_key,                                # 必填
+    *,
+    provider="deepseek",                    # "deepseek" 或 "openai_compatible"
+    model=None,                             # None → 取 provider 默认
+    base_url=None,                          # None → 取 provider 默认
+    temperature=0.5,
+    max_tokens=512,
+    max_retries=3,
+    request_timeout=60.0,
+
+    wiki_dir="csm-wiki",                    # 知识库目录
+    vector_store_dir=".csm_qa/vector_store",
+    embedding_provider="local",             # "local"（本地）或 "openai"
+    embedding_model="BAAI/bge-small-zh-v1.5",
+    embedding_api_key=None,
+    embedding_base_url=None,
+    top_k=3,
+    similarity_threshold=0.72,
+
+    system_prompt=None,                     # None → 内置 CSM/LabVIEW prompt
+    auto_sync_wiki=True,                    # 首次运行若向量库为空，自动同步
+)
+```
+
+### 支持的 LLM 供应商
+
+| `provider`            | 默认 `base_url`                    | 默认 `model`     | 备注                              |
+| --------------------- | ---------------------------------- | ---------------- | --------------------------------- |
+| `deepseek`            | `https://api.deepseek.com`         | `deepseek-chat`  | DeepSeek 官方                      |
+| `openai_compatible`   | 必须传                             | 必须传           | OpenAI 官方、Moonshot、智谱、本地 vLLM/Ollama 等任意 OpenAI 兼容服务 |
+
+示例：使用 OpenAI 官方
+
+```python
+qa = CSMQa(
+    api_key="sk-xxx",
+    provider="openai_compatible",
+    base_url="https://api.openai.com/v1",
+    model="gpt-4o-mini",
+)
+```
+
+### 从环境变量构造
+
+```python
+qa = CSMQa.from_env()
+# 兼容旧变量：LLM_API_KEY / LLM_MODEL / LLM_BASE_URL
+# 新变量：CSM_QA_API_KEY / CSM_QA_PROVIDER / CSM_QA_MODEL / CSM_QA_BASE_URL
+```
+
+---
+
+## 知识库
+
+把任意 Markdown 文档放入 `csm-wiki/` 目录即可（支持子目录、UTF-8 / GBK / Big5 自动识别）。
+
+- 首次构造 `CSMQa` 时若向量库为空，会自动调用 `sync_wiki()`。
+- 之后可通过命令行手动增量同步：
+
+```bash
+python -m csm_qa.sync_wiki                 # 增量
+python -m csm_qa.sync_wiki --force         # 强制重建
+python -m csm_qa.sync_wiki --wiki ./docs --store ./.csm_qa/vector_store
+```
+
+或在代码中：
+
+```python
+qa.sync_wiki(force=False)
+```
+
+---
+
+## 提示词
+
+库内置一段针对 **CSM/LabVIEW + RAG** 的中文 system prompt（详见 [`csm_qa/prompts.py`](csm_qa/prompts.py) 的 `DEFAULT_SYSTEM_PROMPT`）。
+
+如需替换为通用领域 / 英文 / 自定义风格，传入 `system_prompt=` 即可：
+
+```python
+qa = CSMQa(api_key="sk", system_prompt="You are a helpful general-purpose assistant.")
+```
+
+---
+
+## 项目结构
+
+```
+.
+├── csm_qa/                 # SDK 主包（pip install -e . 后可 import）
+│   ├── __init__.py         # 导出 CSMQa / Message / AnswerResult
+│   ├── api.py              # CSMQa 主类
+│   ├── llm.py              # OpenAI 兼容 LLM 客户端
+│   ├── rag.py              # ChromaDB + Embedding 检索器
+│   ├── providers.py        # provider 预设（deepseek / openai_compatible）
+│   ├── prompts.py          # 默认 system prompt
+│   ├── types.py            # Message / AnswerResult / Usage
+│   └── sync_wiki.py        # CLI: python -m csm_qa.sync_wiki
+├── csm-wiki/               # 默认知识库目录（放置 .md 文档）
+├── examples/
+│   ├── basic_usage.py
+│   └── multi_turn.py
+├── tests/                  # 单元测试
+├── docs/                   # 历史调研与设计文档（仅参考，非运行时依赖）
+├── pyproject.toml
+└── requirements.txt
+```
+
+---
+
+## 测试
+
+```bash
+pip install -e .[test]
+python -m pytest tests/ -v
+```
+
+测试用 mock OpenAI 客户端 + 词袋式 fake embedding，无需真实 API key 与模型下载。
+
+---
+
+## License
+
+MIT
