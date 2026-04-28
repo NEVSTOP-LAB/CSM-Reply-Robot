@@ -52,7 +52,8 @@ class EmbeddingFunction:
             from sentence_transformers import SentenceTransformer
 
             # HF_ENDPOINT 为空字符串会导致 huggingface_hub 构造无协议前缀的 URL。
-            # 与老实现保持一致：清理空值并强制设置默认官方端点。
+            # 清理空值并默认使用国内镜像站，避免 huggingface.co 不可访问时下载失败。
+            # 如需使用官方源，可通过环境变量显式设置 HF_ENDPOINT=https://huggingface.co。
             if not os.environ.get("HF_ENDPOINT", "").strip():
                 os.environ.pop("HF_ENDPOINT", None)
                 try:
@@ -61,7 +62,7 @@ class EmbeddingFunction:
                     if not getattr(_hf_constants, "ENDPOINT", "").startswith(
                         ("http://", "https://")
                     ):
-                        _hf_constants.ENDPOINT = "https://huggingface.co"
+                        _hf_constants.ENDPOINT = "https://hf-mirror.com"
                 except Exception:
                     pass
 
