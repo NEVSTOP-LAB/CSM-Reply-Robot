@@ -27,6 +27,7 @@ from scripts.discussion_bot import (
     resolve_org_qa_category_id,
     fetch_org_discussion,
     scan_org_qa_discussions,
+    run_scan_mode,
 )
 
 
@@ -744,3 +745,103 @@ def test_get_source_repo_parts_whitespace_only_segment_raises(monkeypatch):
     monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "owner/   ")
     with pytest.raises(ValueError, match="DISCUSSION_SOURCE_REPO"):
         _get_source_repo_parts()
+
+
+# ── run_scan_mode 容错与鉴权短路 ──────────────────────────────────────────────
+
+
+def _make_open_qa_disc(number: int, *, comments: list[dict] | None = None) -> dict:
+    """构造一个最小可被 _process_discussion_dict 处理的 open Q&A discussion dict。"""
+    return {
+        "id": f"D{number}", "number": number,
+        "title": f"Q{number}", "body": "",
+        "url": f"https://github.com/orgs/NEVSTOP-LAB/discussions/{number}",
+        "closed": False,
+        "category": {"id": "qa-cat", "name": "Q&A"},
+        "comments": {
+            "nodes": comments or [],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        },
+    }
+
+
+def _scan_payload(numbers: list[int]) -> dict:
+    return {
+        "repository": {
+            "discussions": {
+                "nodes": [_make_open_qa_disc(n) for n in numbers],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
+    }
+
+
+class _SequencedQAEngine:
+    """按顺序对每次 ask 返回字符串或抛出预设异常。"""
+    def __init__(self, outcomes: list):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def ask(self, question: str, history=None):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def test_run_scan_mode_continues_after_per_discussion_failure():
+    """单条 discussion 处理抛异常时应记入失败计数，但继续处理后续 discussion。"""
+    client = _MockGraphQL(_scan_payload([1, 2, 3]))
+    engine = _SequencedQAEngine([
+        RuntimeError("transient failure"),  # #1 失败
+        "answer-2",                          # #2 成功
+        "answer-3",                          # #3 成功
+    ])
+    failed = run_scan_mode(
+        client, engine, "NEVSTOP-LAB", ".github", "qa-cat",
+        dry_run=True, bot_login="bot",
+    )
+    assert engine.calls == 3, "失败后必须继续处理后续 discussion"
+    assert failed == 1
+
+
+def test_run_scan_mode_short_circuits_on_auth_error():
+    """LLM 鉴权失败时应立即停止扫描，不再调用后续 discussion。"""
+    from scripts.discussion_bot import _OpenAIAuthError
+
+    if _OpenAIAuthError is None:
+        pytest.skip("openai 未安装时无法构造 AuthenticationError")
+
+    # 构造一个最小化的 AuthenticationError 实例。openai>=1 的 AuthenticationError
+    # 需要 message/response/body 三参，但我们只关心异常类型本身被识别，
+    # 因此用一个直接继承 _OpenAIAuthError 的最简子类来绕开签名差异。
+    class _FakeAuthError(_OpenAIAuthError):  # type: ignore[misc, valid-type]
+        def __init__(self, msg: str = "invalid api key"):
+            BaseException.__init__(self, msg)
+            self.message = msg
+
+    client = _MockGraphQL(_scan_payload([10, 11, 12]))
+    engine = _SequencedQAEngine([
+        _FakeAuthError(),     # #10 鉴权失败 → 中止
+        "should-not-run",     # #11 不应被调用
+        "should-not-run",     # #12 不应被调用
+    ])
+    failed = run_scan_mode(
+        client, engine, "NEVSTOP-LAB", ".github", "qa-cat",
+        dry_run=True, bot_login="bot",
+    )
+    assert engine.calls == 1, "遇到 AuthenticationError 后必须立即停止扫描"
+    assert failed == 1
+
+
+def test_run_scan_mode_all_success_returns_zero():
+    """全部成功时应返回 0。"""
+    client = _MockGraphQL(_scan_payload([1, 2]))
+    engine = _SequencedQAEngine(["a1", "a2"])
+    failed = run_scan_mode(
+        client, engine, "NEVSTOP-LAB", ".github", "qa-cat",
+        dry_run=True, bot_login="bot",
+    )
+    assert failed == 0
+    assert engine.calls == 2

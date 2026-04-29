@@ -35,6 +35,13 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+try:
+    # 仅用于在扫描模式下识别 LLM 鉴权错误（如 DeepSeek API key 无效），
+    # 这是 fatal 错误：所有后续 discussion 的 LLM 调用都会失败，应立即终止扫描。
+    from openai import AuthenticationError as _OpenAIAuthError  # type: ignore
+except ImportError:  # pragma: no cover - openai 是必装依赖，但保险起见兜底
+    _OpenAIAuthError = None  # type: ignore
+
 # ── 确保包根目录在 sys.path（直接运行 scripts/ 时使用）──────────────────────
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
@@ -790,21 +797,48 @@ def run_scan_mode(
     *,
     dry_run: bool = False,
     bot_login: Optional[str] = None,
-) -> None:
+) -> int:
     """全量扫描模式：处理源仓库 Q&A 分类下所有 open discussion，
-    自动回复未答复的 discussion 以及 Bot 回复后又出现新追问的 discussion。"""
+    自动回复未答复的 discussion 以及 Bot 回复后又出现新追问的 discussion。
+
+    单条 discussion 处理失败不会中止整个扫描；但若遇到 LLM 鉴权失败
+    （如 API key 无效），则立即停止——后续调用必然同样失败，继续只是浪费配额。
+
+    Returns:
+        失败的 discussion 数量（0 表示全部成功，调用方据此设置进程退出码）。
+    """
     discussions = scan_org_qa_discussions(
         client, source_owner, source_repo, org_qa_category_id
     )
     logger.info("找到 %d 条 open 状态的组织 Q&A 讨论", len(discussions))
     replied = 0
+    failed = 0
+    auth_failure = False
     for disc in discussions:
-        if _process_discussion_dict(
-            client, qa_engine, disc, org_qa_category_id,
-            dry_run=dry_run, bot_login=bot_login,
-        ):
-            replied += 1
-    logger.info("本次扫描共回复 %d 条讨论", replied)
+        number = disc.get("number")
+        try:
+            if _process_discussion_dict(
+                client, qa_engine, disc, org_qa_category_id,
+                dry_run=dry_run, bot_login=bot_login,
+            ):
+                replied += 1
+        except Exception as exc:  # noqa: BLE001 — 扫描需对每条 discussion 隔离失败
+            failed += 1
+            if _OpenAIAuthError is not None and isinstance(exc, _OpenAIAuthError):
+                logger.error(
+                    "Discussion #%s 处理失败（LLM 鉴权错误，API key 无效）: %s",
+                    number, exc,
+                )
+                logger.error("LLM 鉴权失败为 fatal，停止扫描剩余讨论")
+                auth_failure = True
+                break
+            logger.exception("Discussion #%s 处理失败，继续处理下一条: %s", number, exc)
+    logger.info(
+        "本次扫描共回复 %d 条讨论，失败 %d 条%s",
+        replied, failed,
+        "（因鉴权错误提前终止）" if auth_failure else "",
+    )
+    return failed
 
 
 # ── 入口 ─────────────────────────────────────────────────────────────────────
@@ -933,7 +967,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             org_category_id = resolve_org_qa_category_id(
                 client, source_owner, source_repo
             )
-            run_scan_mode(
+            scan_failures = run_scan_mode(
                 client,
                 qa_engine,
                 source_owner,
@@ -942,6 +976,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 dry_run=args.dry_run,
                 bot_login=bot_login,
             )
+            if scan_failures:
+                # 至少一条 discussion 处理失败：以非零码退出，让 Actions 标记失败，
+                # 同时保留前面已成功回复的进度（不抛异常以避免再触发 traceback）。
+                return 1
     except RuntimeError as exc:
         logger.error("%s", exc)
         return 1
