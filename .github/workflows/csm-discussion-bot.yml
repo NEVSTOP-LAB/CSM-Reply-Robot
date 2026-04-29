@@ -68,11 +68,38 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-hf-
 
+      # 解析 csm-wiki 远程仓库当前 HEAD commit SHA，用于 vector store 缓存 key。
+      # 必须在 actions/cache 之前执行，否则 cache key 会与实际 wiki 内容脱节，
+      # 导致每次都重建 RAG（参见 csm_qa/wiki_updater.py 中的 commit 比对逻辑）。
+      - name: Resolve csm-wiki latest commit SHA
+        id: wiki-sha
+        env:
+          # 使用 GITHUB_TOKEN 提升 API 速率限制（公开仓库读取 API 即使无 token 也可用）
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SOURCE_FILE="csm-wiki/wiki_source.json"
+          REPO_URL=$(python -c "import json; print(json.load(open('$SOURCE_FILE'))['url'])")
+          # 形如 https://github.com/NEVSTOP-LAB/CSM-Wiki(.git)? → owner/repo
+          SLUG=$(echo "$REPO_URL" | sed -E 's#^https?://github\.com/([^/]+/[^/]+?)(\.git)?/?$#\1#')
+          API_URL="https://api.github.com/repos/${SLUG}/commits/main"
+          SHA=$(curl -fsSL \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "$API_URL" | python -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+          echo "csm-wiki ($SLUG) HEAD: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
       - name: Cache vector store
         uses: actions/cache@v4
         with:
-          path: .csm_qa/vector_store
-          key: ${{ runner.os }}-vectorstore-${{ hashFiles('csm-wiki/**') }}
+          # 同时缓存 wiki_source.json 与 wiki 克隆目录，
+          # 使得 check_and_update_wiki 在缓存命中后能识别"已是最新"并跳过重建。
+          path: |
+            .csm_qa/vector_store
+            csm-wiki/wiki_source.json
+            csm-wiki/remote
+          key: ${{ runner.os }}-vectorstore-${{ steps.wiki-sha.outputs.sha }}
           restore-keys: |
             ${{ runner.os }}-vectorstore-
 
