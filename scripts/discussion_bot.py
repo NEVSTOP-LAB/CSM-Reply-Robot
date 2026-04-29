@@ -145,6 +145,12 @@ def _get_source_repo_parts() -> tuple[str, str]:
                 f"DISCUSSION_SOURCE_REPO 格式不正确: {src!r}，期望 'owner/repo'"
             )
         owner, repo = src.split("/", 1)
+        owner = owner.strip()
+        repo = repo.strip()
+        if not owner or not repo:
+            raise ValueError(
+                f"DISCUSSION_SOURCE_REPO 格式不正确: {src!r}，期望 'owner/repo'"
+            )
         return owner, repo
     org, _ = _get_repo_parts()
     return org, ".github"
@@ -899,7 +905,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 bot_login=bot_login,
             )
         elif args.org_discussion_number is not None:
-            source_owner, source_repo = _get_source_repo_parts()
+            try:
+                source_owner, source_repo = _get_source_repo_parts()
+            except ValueError as exc:
+                logger.error("%s", exc)
+                return 1
             org_category_id = resolve_org_qa_category_id(
                 client, source_owner, source_repo
             )
@@ -915,7 +925,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         else:
             # --scan-org
-            source_owner, source_repo = _get_source_repo_parts()
+            try:
+                source_owner, source_repo = _get_source_repo_parts()
+            except ValueError as exc:
+                logger.error("%s", exc)
+                return 1
             org_category_id = resolve_org_qa_category_id(
                 client, source_owner, source_repo
             )

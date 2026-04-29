@@ -713,3 +713,34 @@ def test_get_source_repo_parts_invalid_env_raises(monkeypatch):
     monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "no-slash")
     with pytest.raises(ValueError, match="DISCUSSION_SOURCE_REPO"):
         _get_source_repo_parts()
+
+
+def test_get_source_repo_parts_empty_owner_raises(monkeypatch):
+    """DISCUSSION_SOURCE_REPO 中 owner 段为空时应抛出 ValueError。"""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NEVSTOP-LAB/CSM-QA-Robot")
+    monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "/repo")
+    with pytest.raises(ValueError, match="DISCUSSION_SOURCE_REPO"):
+        _get_source_repo_parts()
+
+
+def test_get_source_repo_parts_empty_repo_raises(monkeypatch):
+    """DISCUSSION_SOURCE_REPO 中 repo 段为空时应抛出 ValueError。"""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NEVSTOP-LAB/CSM-QA-Robot")
+    monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "owner/")
+    with pytest.raises(ValueError, match="DISCUSSION_SOURCE_REPO"):
+        _get_source_repo_parts()
+
+
+def test_get_source_repo_parts_strips_whitespace(monkeypatch):
+    """DISCUSSION_SOURCE_REPO 各段两侧空格应被 strip。"""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NEVSTOP-LAB/CSM-QA-Robot")
+    monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "  some-org / discuss-host  ")
+    assert _get_source_repo_parts() == ("some-org", "discuss-host")
+
+
+def test_get_source_repo_parts_whitespace_only_segment_raises(monkeypatch):
+    """DISCUSSION_SOURCE_REPO 中仅含空格的段也应抛出 ValueError。"""
+    monkeypatch.setenv("GITHUB_REPOSITORY", "NEVSTOP-LAB/CSM-QA-Robot")
+    monkeypatch.setenv("DISCUSSION_SOURCE_REPO", "owner/   ")
+    with pytest.raises(ValueError, match="DISCUSSION_SOURCE_REPO"):
+        _get_source_repo_parts()

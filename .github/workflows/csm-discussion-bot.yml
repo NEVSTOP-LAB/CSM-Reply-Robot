@@ -118,11 +118,13 @@ jobs:
             ${{ runner.os }}-vectorstore-
 
       - name: Install dependencies
+        id: install-deps
         run: pip install -e .
 
       # pip 依赖已成功安装，立即保存 pip 缓存（独立于后续 bot 是否成功）。
+      # 仅在 install 步骤成功时保存，避免污染缓存为不完整状态。
       - name: Save pip cache
-        if: always() && steps.cache-pip.outputs.cache-hit != 'true'
+        if: always() && steps.install-deps.outcome == 'success' && steps.cache-pip.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/pip
@@ -171,15 +173,40 @@ jobs:
 
       # HF 模型与向量库的下载/构建发生在 bot 启动早期，即使后续 bot 失败，
       # 也应保存这两个缓存以加速下次重跑。使用 if: always() 强制保存。
-      - name: Save HuggingFace models cache
+      # 在保存前先检查目录是否存在且非空：bot 可能在下载/构建之前就提前退出
+      # （如配置错误），此时 cache/save 若直接执行会因路径不存在而失败，
+      # 把缓存步骤变成新的不稳定因素，掩盖真正的根因。
+      - name: Check HuggingFace cache populated
+        id: check-hf-populated
         if: always() && steps.cache-hf.outputs.cache-hit != 'true'
+        run: |
+          if [ -d "$HOME/.cache/huggingface" ] && [ -n "$(ls -A "$HOME/.cache/huggingface" 2>/dev/null)" ]; then
+            echo "populated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "populated=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping HF cache save: ~/.cache/huggingface missing or empty"
+          fi
+
+      - name: Save HuggingFace models cache
+        if: always() && steps.cache-hf.outputs.cache-hit != 'true' && steps.check-hf-populated.outputs.populated == 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/huggingface
           key: ${{ steps.cache-hf.outputs.cache-primary-key }}
 
-      - name: Save vector store cache
+      - name: Check vector store cache populated
+        id: check-vs-populated
         if: always() && steps.cache-vs.outputs.cache-hit != 'true'
+        run: |
+          if [ -d ".csm_qa/vector_store" ] && [ -n "$(ls -A .csm_qa/vector_store 2>/dev/null)" ]; then
+            echo "populated=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "populated=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping vector store cache save: .csm_qa/vector_store missing or empty"
+          fi
+
+      - name: Save vector store cache
+        if: always() && steps.cache-vs.outputs.cache-hit != 'true' && steps.check-vs-populated.outputs.populated == 'true'
         uses: actions/cache/save@v4
         with:
           path: |
