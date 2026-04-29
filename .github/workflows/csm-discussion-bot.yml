@@ -11,6 +11,16 @@ on:
   repository_dispatch:
     types: [org_discussion_created]
 
+  # 兜底：定时全量扫描组织 Q&A 分类下所有 open 的 discussion，
+  # 用于覆盖以下场景（webhook/README.md 中明确承诺保留）：
+  #   1. 组织级 discussion 不会触发本仓库的 `discussion` 事件，必须靠
+  #      Webhook Relay → repository_dispatch 才能实时响应；当 Relay 链路
+  #      （GitHub App / Cloudflare Worker）出现任何故障时，新建的 discussion
+  #      会一直无人应答，schedule 是最后一道保险。
+  #   2. 即使 Relay 正常，偶发漏发也能在 30 分钟内被这次扫描捕获。
+  schedule:
+    - cron: '*/30 * * * *'
+
   # 手动触发：对组织 Q&A 分类下所有 open 的 discussion 做全量扫描，
   # 自动回复未答复的 discussion 以及在 Bot 回复后又有新追问的 discussion。
   workflow_dispatch:
@@ -157,8 +167,8 @@ jobs:
           fi
           python scripts/discussion_bot.py --org-discussion-number "$DISCUSSION_NUMBER"
 
-      - name: Run bot (manual full scan)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Run bot (full scan - manual or scheduled fallback)
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           CSM_QA_GH_TOKEN: ${{ secrets.CSM_QA_GH_TOKEN }}
@@ -166,7 +176,9 @@ jobs:
           DISCUSSION_SOURCE_REPO: ${{ github.repository_owner }}/.github
         run: |
           ARGS="--scan-org"
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          # schedule 触发时 inputs 上下文为空，`${{ inputs.dry_run }}` 会展开为空串，
+          # 因此默认实跑；只有 workflow_dispatch 且用户显式选择 true 时才走 dry-run。
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run || 'false' }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
           fi
           python scripts/discussion_bot.py $ARGS
