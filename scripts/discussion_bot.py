@@ -319,39 +319,56 @@ def build_reply(answer: str) -> str:
 def resolve_org_qa_category_id(client: GitHubGraphQL, org: str) -> str:
     """通过 GraphQL 查询组织中名为 'Q&A' 的 Discussion Category node ID。
 
+    GitHub GraphQL API 不支持 organization.discussionCategories，
+    因此通过扫描组织已有讨论来提取分类信息。
+
     Raises:
         RuntimeError: 未找到 Q&A category。
     """
     gql = """
-    query($org: String!) {
+    query($org: String!, $cursor: String) {
       organization(login: $org) {
-        discussionCategories(first: 30) {
+        discussions(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
           nodes {
-            id
-            name
-            slug
-            isAnswerable
+            category {
+              id
+              name
+              slug
+              isAnswerable
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
           }
         }
       }
     }
     """
-    data = client.query(gql, {"org": org})
-    nodes = (
-        data.get("organization", {})
-        .get("discussionCategories", {})
-        .get("nodes", [])
-    )
-    for node in nodes:
-        if node.get("name", "").strip() == QA_CATEGORY_NAME:
-            logger.info(
-                "找到组织 Q&A category: id=%s slug=%s isAnswerable=%s",
-                node["id"],
-                node.get("slug"),
-                node.get("isAnswerable"),
-            )
-            return node["id"]
-    available = [n.get("name") for n in nodes]
+    cursor = None
+    seen_categories: dict[str, str] = {}
+    while True:
+        data = client.query(gql, {"org": org, "cursor": cursor})
+        discussions_data = data.get("organization", {}).get("discussions", {})
+        nodes = discussions_data.get("nodes", [])
+        page_info = discussions_data.get("pageInfo", {"hasNextPage": False, "endCursor": None})
+        for node in nodes:
+            cat = node.get("category") or {}
+            cat_name = cat.get("name", "").strip()
+            if cat_name and cat.get("id"):
+                seen_categories[cat_name] = cat["id"]
+            if cat_name == QA_CATEGORY_NAME:
+                logger.info(
+                    "找到组织 Q&A category: id=%s slug=%s isAnswerable=%s",
+                    cat["id"],
+                    cat.get("slug"),
+                    cat.get("isAnswerable"),
+                )
+                return cat["id"]
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+    available = list(seen_categories.keys())
     raise RuntimeError(
         f"未找到组织 {org!r} 中名为 {QA_CATEGORY_NAME!r} 的 Discussion Category，"
         f"已有分类: {available}"

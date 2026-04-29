@@ -225,11 +225,12 @@ def test_resolve_org_qa_category_id_found():
     """能正确返回组织中名为 'Q&A' 的 category ID。"""
     data = {
         "organization": {
-            "discussionCategories": {
+            "discussions": {
                 "nodes": [
-                    {"id": "cat1", "name": "General", "slug": "general", "isAnswerable": False},
-                    {"id": "cat2", "name": "Q&A", "slug": "q-a", "isAnswerable": True},
-                ]
+                    {"category": {"id": "cat1", "name": "General", "slug": "general", "isAnswerable": False}},
+                    {"category": {"id": "cat2", "name": "Q&A", "slug": "q-a", "isAnswerable": True}},
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
             }
         }
     }
@@ -241,10 +242,11 @@ def test_resolve_org_qa_category_id_not_found():
     """未找到 Q&A category 时应抛出 RuntimeError。"""
     data = {
         "organization": {
-            "discussionCategories": {
+            "discussions": {
                 "nodes": [
-                    {"id": "cat1", "name": "General", "slug": "general", "isAnswerable": False},
-                ]
+                    {"category": {"id": "cat1", "name": "General", "slug": "general", "isAnswerable": False}},
+                ],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
             }
         }
     }
@@ -255,7 +257,14 @@ def test_resolve_org_qa_category_id_not_found():
 
 def test_resolve_org_qa_category_id_empty():
     """分类列表为空时应抛出 RuntimeError。"""
-    data = {"organization": {"discussionCategories": {"nodes": []}}}
+    data = {
+        "organization": {
+            "discussions": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
+    }
     client = _MockGraphQL(data)
     with pytest.raises(RuntimeError):
         resolve_org_qa_category_id(client, "NEVSTOP-LAB")
