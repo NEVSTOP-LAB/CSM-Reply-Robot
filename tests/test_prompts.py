@@ -83,6 +83,30 @@ def test_build_system_message_handles_missing_metadata_fields():
     assert f"{DEFAULT_WIKI_BASE_URL}/only_src.md" in out
 
 
+def test_build_system_message_treats_unknown_source_as_missing():
+    """``(unknown)`` 占位符应被视为缺失，不输出 ``来源:`` 行也不生成链接。"""
+    contexts = [{"text": "正文", "source": "(unknown)", "heading": "H"}]
+    out = build_system_message(DEFAULT_SYSTEM_PROMPT, contexts)
+    # 仅检查参考资料段（系统提示词本身含有 "来源"/"链接" 等关键字）
+    ctx_section = out.split("【参考资料】", 1)[1]
+    assert "正文" in ctx_section
+    assert "(unknown)" not in ctx_section
+    assert "来源:" not in ctx_section
+    assert "链接:" not in ctx_section
+
+
+def test_build_system_message_empty_base_url_skips_link():
+    """``wiki_base_url`` 为空/空白时不应生成形如 ``/foo.md`` 的无效链接。"""
+    contexts = [{"text": "x", "source": "foo.md", "heading": "H"}]
+    out = build_system_message(DEFAULT_SYSTEM_PROMPT, contexts, wiki_base_url="   ")
+    ctx_section = out.split("【参考资料】", 1)[1]
+    assert "x" in ctx_section
+    assert "来源: foo.md" in ctx_section
+    # 不应出现链接行，也不应注入相对路径式的 "/foo.md"
+    assert "链接:" not in ctx_section
+    assert "/foo.md" not in ctx_section
+
+
 def test_context_block_template_structure():
     # 模板必须包含 {contexts} 占位符，以便上层注入
     assert "{contexts}" in CONTEXT_BLOCK_TEMPLATE

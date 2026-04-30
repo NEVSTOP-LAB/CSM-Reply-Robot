@@ -185,14 +185,14 @@ class CSM_QA:
             model     = deepseek-chat
             base_url  =
             temperature     = 0.5
-            max_tokens      = 512
+            max_tokens      = 2048
             max_retries     = 3
             request_timeout = 60.0
 
             [rag]
             wiki_dir          = csm-wiki/remote
             vector_store_dir  = .csm_qa/vector_store
-            top_k             = 3
+            top_k             = 6
             similarity_threshold = 0.72
             auto_sync_wiki    = true
 
@@ -204,6 +204,7 @@ class CSM_QA:
 
             [prompt]
             system_prompt =
+            wiki_base_url = https://github.com/NEVSTOP-LAB/CSM-Wiki/blob/main
 
         Args:
             config_path: INI 文件路径（相对路径或绝对路径均可）。

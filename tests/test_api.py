@@ -186,7 +186,7 @@ def test_ask_includes_wiki_link_in_system_message(qa):
     result = qa.ask_detailed("CSM 状态机 切换")
     sys_msg = result.prompt_messages[0]["content"]
     if result.contexts:
-        assert "https://github.com/NEVSTOP-LAB/CSM-Wiki/blob/main/" in sys_msg
+        assert qa.wiki_base_url in sys_msg
         assert "csm.md" in sys_msg
 
 

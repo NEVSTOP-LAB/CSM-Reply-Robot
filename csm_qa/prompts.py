@@ -40,11 +40,18 @@ CONTEXT_BLOCK_TEMPLATE = """\
 
 
 def _build_wiki_url(source: str, base_url: str) -> str:
-    """根据片段 ``source``（相对路径）和 ``base_url`` 拼装 csm-wiki 链接。"""
+    """根据片段 ``source``（相对路径）和 ``base_url`` 拼装 csm-wiki 链接。
+
+    若 ``source`` 缺失或为占位符 ``(unknown)``，或 ``base_url`` 为空/空白，
+    则视为"不开启链接"返回空串，避免把无效相对路径注入到 system prompt。
+    """
     if not source or source == "(unknown)":
         return ""
+    base = str(base_url).strip()
+    if not base:
+        return ""
     src = source.lstrip("/")
-    base = base_url.rstrip("/")
+    base = base.rstrip("/")
     return f"{base}/{src}"
 
 
@@ -73,6 +80,10 @@ def build_system_message(
                 text = str(item.get("text", "")).strip()
                 source = str(item.get("source", "")).strip()
                 heading = str(item.get("heading", "")).strip()
+                # "(unknown)" 占位视为缺失：不输出 来源: 行，也不生成链接，
+                # 与提示词中"每个片段附带 来源 与 链接"的表述保持一致。
+                if source == "(unknown)":
+                    source = ""
                 url = _build_wiki_url(source, wiki_base_url)
                 header_parts = [f"[片段 {i + 1}]"]
                 if source:
