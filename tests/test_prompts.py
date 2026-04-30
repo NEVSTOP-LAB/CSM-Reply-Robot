@@ -67,6 +67,22 @@ def test_build_system_message_with_custom_wiki_base_url():
     assert "https://wiki.example.com/docs/foo.md" in out
 
 
+def test_build_system_message_handles_missing_metadata_fields():
+    """source/heading 为空或缺失时不应抛错，且不应输出空的 ``来源:``/``小节:`` 行。"""
+    contexts = [
+        {"text": "无元数据", "source": "", "heading": ""},
+        {"text": "仅 source", "source": "only_src.md"},
+    ]
+    out = build_system_message(DEFAULT_SYSTEM_PROMPT, contexts)
+    assert "无元数据" in out
+    assert "仅 source" in out
+    # 没有 source 时不应出现空 "来源: " 行；也不应生成空链接
+    assert "来源: \n" not in out and "来源:  " not in out
+    assert "链接: \n" not in out
+    # 有 source 时应正常拼链接
+    assert f"{DEFAULT_WIKI_BASE_URL}/only_src.md" in out
+
+
 def test_context_block_template_structure():
     # 模板必须包含 {contexts} 占位符，以便上层注入
     assert "{contexts}" in CONTEXT_BLOCK_TEMPLATE
